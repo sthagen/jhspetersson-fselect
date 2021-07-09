@@ -10,6 +10,9 @@ pub enum Field {
     Name,
     Path,
     AbsPath,
+    Extension,
+    Directory,
+    AbsDir,
     Size,
     FormattedSize,
     Uid,
@@ -48,6 +51,7 @@ pub enum Field {
     IsHidden,
     HasXattrs,
     IsShebang,
+    IsEmpty,
     Width,
     Height,
     Duration,
@@ -91,8 +95,11 @@ impl FromStr for Field {
 
         match field.as_str() {
             "name" => Ok(Field::Name),
+            "ext" | "extension" => Ok(Field::Extension),
             "path" => Ok(Field::Path),
             "abspath" => Ok(Field::AbsPath),
+            "dir" | "directory" | "dirname" => Ok(Field::Directory),
+            "absdir" => Ok(Field::AbsDir),
             "size" => Ok(Field::Size),
             "fsize" | "hsize" => Ok(Field::FormattedSize),
             "uid" => Ok(Field::Uid),
@@ -131,6 +138,7 @@ impl FromStr for Field {
             "is_hidden" => Ok(Field::IsHidden),
             "has_xattrs" => Ok(Field::HasXattrs),
             "is_shebang" => Ok(Field::IsShebang),
+            "is_empty" => Ok(Field::IsEmpty),
             "width" => Ok(Field::Width),
             "height" => Ok(Field::Height),
             "mime" => Ok(Field::Mime),
@@ -210,8 +218,11 @@ impl Field {
     pub fn is_available_for_archived_files(&self) -> bool {
         match self {
             Field::Name
+            | Field::Extension
             | Field::Path
             | Field::AbsPath
+            | Field::Directory
+            | Field::AbsDir
             | Field::Size
             | Field::FormattedSize
             | Field::IsDir
@@ -237,6 +248,7 @@ impl Field {
             | Field::Suid
             | Field::Sgid
             | Field::IsHidden
+            | Field::IsEmpty
             | Field::Modified
             | Field::IsArchive
             | Field::IsAudio

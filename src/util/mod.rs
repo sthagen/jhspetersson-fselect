@@ -148,83 +148,90 @@ pub fn error_message(source: &str, description: &str) {
     eprint!("{}: {}", source, description);
 }
 
+pub fn get_extension(s: &str) -> String {
+    match Path::new(s).extension() {
+        Some(ext) => ext.to_string_lossy().to_string(),
+        None => String::new()
+    }
+}
+
 pub fn parse_filesize(s: &str) -> Option<u64> {
     let string = s.to_string().to_ascii_lowercase().replace(" ", "");
     let length = string.len();
 
     if length > 1 && string.ends_with("k") {
-        match &string[..(length - 1)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 2 && string.ends_with("kb") {
-        match &string[..(length - 2)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1000.0) as u64),
-            _ => return None
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0) as u64),
+            _ => None
         }
     }
 
     if length > 3 && string.ends_with("kib") {
-        match &string[..(length - 3)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 1 && string.ends_with("m") {
-        match &string[..(length - 1)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0 * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0 * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 2 && string.ends_with("mb") {
-        match &string[..(length - 2)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1000.0 * 1000.0) as u64),
-            _ => return None
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0 * 1000.0) as u64),
+            _ => None
         }
     }
 
     if length > 3 && string.ends_with("mib") {
-        match &string[..(length - 3)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0 * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0 * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 1 && string.ends_with("g") {
-        match &string[..(length - 1)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0 * 1024.0 * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0 * 1024.0 * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 2 && string.ends_with("gb") {
-        match &string[..(length - 2)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1000.0 * 1000.0 * 1000.0) as u64),
-            _ => return None
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0 * 1000.0 * 1000.0) as u64),
+            _ => None
         }
     }
 
     if length > 3 && string.ends_with("gib") {
-        match &string[..(length - 3)].parse::<f64>() {
-            Ok(size) => return Some((*size * 1024.0 * 1024.0 * 1024.0) as u64),
-            _ => return None
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0 * 1024.0 * 1024.0) as u64),
+            _ => None
         }
     }
 
     if length > 1 && string.ends_with("b") {
-        match &string[..(length - 1)].parse::<u64>() {
-            Ok(size) => return Some(size * 1),
-            _ => return None
+        return match &string[..(length - 1)].parse::<u64>() {
+            Ok(size) => Some(size * 1),
+            _ => None
         }
     }
 
-    match string.parse::<u64>() {
-        Ok(size) => return Some(size),
-        _ => return None
+    return match string.parse::<u64>() {
+        Ok(size) => Some(size),
+        _ => None
     }
 }
 
@@ -459,7 +466,7 @@ pub fn get_metadata(entry: &DirEntry, follow_symlinks: bool) -> Option<Metadata>
 }
 
 lazy_static! {
-    static ref IMAGE_DIM_READABLE_EXTENSIONS: Vec<String> = vec![String::from(".bmp"), String::from(".gif"), String::from(".heic"), String::from(".heif"), String::from(".jpeg"), String::from(".jpg"), String::from(".png"), String::from(".psb"), String::from(".psd"), String::from(".tiff"), String::from(".webp")];
+    static ref IMAGE_DIM_READABLE_EXTENSIONS: Vec<String> = vec![String::from(".bmp"), String::from(".gif"), String::from(".heic"), String::from(".heif"), String::from(".jpeg"), String::from(".jpg"), String::from(".jxl"), String::from(".png"), String::from(".psb"), String::from(".psd"), String::from(".tiff"), String::from(".webp")];
     static ref MP4_DIM_READABLE_EXTENSIONS: Vec<String> = vec![String::from(".mp4")];
     static ref MKV_DIM_READABLE_EXTENSIONS: Vec<String> = vec![String::from(".mkv")];
 }
@@ -560,6 +567,9 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
             for field in reader.fields() {
                 let field_tag = format!("{}", field.tag);
                 match field.value {
+                    exif::Value::Rational(ref vec) if !vec.is_empty() && (field_tag.eq("GPSLongitude") || field_tag.eq("GPSLatitude") || field_tag.eq("GPSAltitude")) => {
+                        exif_info.insert(field_tag, vec.iter().map(|r| (r.num / r.denom).to_string()).collect::<Vec<String>>().join(";"));
+                    },
                     exif::Value::Ascii(ref vec) if !vec.is_empty() => if let Ok(str_value) = std::str::from_utf8(&vec[0]) {
                         exif_info.insert(field_tag, str_value.to_string());
                     },
@@ -569,11 +579,50 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
                 }
             }
 
+            if exif_info.contains_key("GPSLongitude") && exif_info.contains_key("GPSLongitudeRef") {
+                let location = exif_info.get("GPSLongitude").unwrap().to_string();
+                let location_ref = exif_info.get("GPSLongitudeRef").unwrap().to_string();
+                if let Ok(coord) = parse_location_string(location, location_ref, "W") {
+                    exif_info.insert(String::from("__Lng"), coord.to_string());
+                }
+            }
+
+            if exif_info.contains_key("GPSLatitude") && exif_info.contains_key("GPSLatitudeRef") {
+                let location = exif_info.get("GPSLatitude").unwrap().to_string();
+                let location_ref = exif_info.get("GPSLatitudeRef").unwrap().to_string();
+                if let Ok(coord) = parse_location_string(location, location_ref, "S") {
+                    exif_info.insert(String::from("__Lat"), coord.to_string());
+                }
+            }
+
+            if exif_info.contains_key("GPSAltitude") && exif_info.contains_key("GPSAltitudeRef") {
+                let mut altitude = exif_info.get("GPSAltitude").unwrap().to_string().parse::<f32>().unwrap_or(0.0);
+                let altitude_ref = exif_info.get("GPSAltitudeRef").unwrap().to_string();
+                if altitude_ref.eq("1") {
+                    altitude = -altitude;
+                }
+                exif_info.insert(String::from("__Alt"), altitude.to_string());
+            }
+
             return Some(exif_info);
         }
     }
 
     None
+}
+
+fn parse_location_string(s: String, location_ref: String, modifier_value: &str) -> Result<f32, ()> {
+    let parts = s.split(";").map(|p| p.to_string()).collect::<Vec<String>>();
+    if parts.len() == 3 {
+        let mut coord = parts[0].parse::<f32>().unwrap_or(0.0) + parts[1].parse::<f32>().unwrap_or(0.0) / 60.0 + parts[2].parse::<f32>().unwrap_or(0.0) / 3660.0;
+        if location_ref.eq(modifier_value) {
+            coord = -coord;
+        }
+
+        return Ok(coord);
+    }
+
+    return Err(());
 }
 
 pub fn is_shebang(path: &PathBuf) -> bool {
@@ -690,6 +739,13 @@ pub fn get_sha3_512_file_hash(entry: &DirEntry) -> String {
     }
 
     String::new()
+}
+
+pub fn is_dir_empty(entry: &DirEntry) -> Option<bool> {
+    match fs::read_dir(&entry.path()) {
+        Ok(dir) => Some(!dir.into_iter().any(|_| true)),
+        _ => None
+    }
 }
 
 #[cfg(test)]
@@ -819,5 +875,14 @@ mod tests {
         assert_eq!(format_filesize(file_size, "%.0kb"), String::from("1678KB"));
         assert_eq!(format_filesize(file_size, "%.0s"), String::from("2M"));
         assert_eq!(format_filesize(file_size, "%.0 s"), String::from("2 M"));
+    }
+
+    #[test]
+    fn test_get_extension() {
+        assert_eq!(get_extension(".no_ext"), String::new());
+        assert_eq!(get_extension("no_ext"), String::new());
+        assert_eq!(get_extension("has_ext.foo"), String::from("foo"));
+        assert_eq!(get_extension("has_ext.foobar"), String::from("foobar"));
+        assert_eq!(get_extension("has.extension.foo"), String::from("foo"));
     }
 }

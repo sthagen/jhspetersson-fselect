@@ -233,8 +233,10 @@ pub enum Function {
     Upper,
     Length,
     Base64,
+    Bin,
     Hex,
     Oct,
+    Power,
 
     ContainsJapanese,
     ContainsHiragana,
@@ -299,8 +301,10 @@ impl FromStr for Function {
             "upper" | "uppercase" | "ucase" => Ok(Function::Upper),
             "length" | "len" => Ok(Function::Length),
             "base64" => Ok(Function::Base64),
+            "bin" => Ok(Function::Bin),
             "hex" => Ok(Function::Hex),
             "oct" => Ok(Function::Oct),
+            "power" | "pow" => Ok(Function::Power),
 
             "contains_japanese" | "japanese" => Ok(Function::ContainsJapanese),
             "contains_hiragana" | "hiragana" => Ok(Function::ContainsHiragana),
@@ -401,7 +405,8 @@ impl Function {
             | Function::Random
             | Function::Day
             | Function::Month
-            | Function::Year => true,
+            | Function::Year
+            | Function::Power => true,
             _ => false
         }
     }
@@ -425,6 +430,12 @@ pub fn get_value(function: &Option<Function>,
         Some(Function::Base64) => {
             return Variant::from_string(&base64::encode(&function_arg));
         },
+        Some(Function::Bin) => {
+            return match function_arg.parse::<i64>() {
+                Ok(val) => Variant::from_string(&format!("{:b}", val)),
+                _ => Variant::empty(VariantType::String)
+            };
+        },
         Some(Function::Hex) => {
             return match function_arg.parse::<i64>() {
                 Ok(val) => Variant::from_string(&format!("{:x}", val)),
@@ -434,6 +445,19 @@ pub fn get_value(function: &Option<Function>,
         Some(Function::Oct) => {
             return match function_arg.parse::<i64>() {
                 Ok(val) => Variant::from_string(&format!("{:o}", val)),
+                _ => Variant::empty(VariantType::String)
+            };
+        },
+        Some(Function::Power) => {
+            return match function_arg.parse::<f64>() {
+                Ok(val) => {
+                    let power = match function_args.get(0) {
+                        Some(power) => power.parse::<f64>().unwrap(),
+                        _ => 0.0
+                    };
+
+                    return Variant::from_float(val.powf(power));
+                },
                 _ => Variant::empty(VariantType::String)
             };
         },

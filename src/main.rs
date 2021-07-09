@@ -24,6 +24,7 @@ mod ignore;
 mod lexer;
 mod mode;
 mod operators;
+mod output;
 mod parser;
 mod query;
 mod searcher;
@@ -107,9 +108,13 @@ fn main() {
         args.remove(0);
 
         if args.is_empty() {
-            short_usage_info(no_color);
-            help_hint();
-            return;
+            if !interactive {
+                short_usage_info(no_color);
+                help_hint();
+                return;
+            } else {
+                break;
+            }
         }
 
         first_arg = args[0].to_ascii_lowercase();
@@ -223,14 +228,20 @@ Path Options:
     gitignore | git                 Search respects .gitignore files found.
     hgignore | hg                   Search respects .hgignore files found.
     dockerignore | docker           Search respects .dockerignore files found.
+    nogitignore | nogit             Disable .gitignore parsing during the search.
+    nohgignore | nohg               Disable .hgignore parsing during the search.
+    nodockerignore | nodocker       Disable .dockerignore parsing during the search.
     dfs 	                        Depth-first search mode.
     bfs 	                        Breadth-first search mode. This is the default.
     regexp | rx                     Use regular expressions to search within multiple roots.
 
 Column Options:
-    name                            Returns the name of the file
+    name                            Returns the name (with extension) of the file
+    extension | ext                 Returns the extension of the file
     path                            Returns the path of the file
     abspath                         Returns the absolute path of the file
+    directory | dirname | dir       Returns the directory of the file
+    absdir                          Returns the absolute directory of the file
     size                            Returns the size of the file in bytes
     fsize | hsize                   Returns the size of the file accompanied with the unit
     uid                             Returns the UID of the owner
@@ -261,18 +272,18 @@ Column Options:
     user_read                       Returns a boolean signifying whether the file can be read by the owner
     user_write                      Returns a boolean signifying whether the file can be written by the owner
     user_exec                       Returns a boolean signifying whether the file can be executed by the owner
-    user_all                        Returns a boolean signifying whether the file can be fully accecced by the owner
+    user_all                        Returns a boolean signifying whether the file can be fully accessed by the owner
 
     group                           Returns the name of the owner's group for this file
     group_read                      Returns a boolean signifying whether the file can be read by the owner's group
     group_write                     Returns a boolean signifying whether the file can be written by the owner's group
     group_exec                      Returns a boolean signifying whether the file can be executed by the owner's group
-    group_all                       Returns a boolean signifying whether the file can be fully accecced by the group
+    group_all                       Returns a boolean signifying whether the file can be fully accessed by the group
 
     other_read                      Returns a boolean signifying whether the file can be read by others
     other_write                     Returns a boolean signifying whether the file can be written by others
     other_exec                      Returns a boolean signifying whether the file can be executed by others
-    other_all                       Returns a boolean signifying whether the file can be fully accecced by the others
+    other_all                       Returns a boolean signifying whether the file can be fully accessed by the others
 
     suid                            Returns a boolean signifying whether the file permissions have a SUID bit set
     sgid                            Returns a boolean signifying whether the file permissions have a SGID bit set
@@ -304,6 +315,7 @@ Column Options:
     duration                        Returns the duration of audio file in seconds
 
     is_shebang                      Returns a boolean signifying whether the file starts with a shebang (#!)
+    is_empty                        Returns a boolean signifying whether the file is empty or the directory is empty
     is_archive                      Returns a boolean signifying whether the file is an archival file
     is_audio                        Returns a boolean signifying whether the file is an audio file
     is_book                         Returns a boolean signifying whether the file is a book
@@ -359,8 +371,10 @@ Functions:
         CONTAINS_KATAKANA           Used to check if string value contains katakana symbols
         CONTAINS_KANJI              Used to check if string value contains kanji symbols
     Other:
+        BIN                         Returns binary representation of an integer value
         HEX                         Returns hexadecimal representation of an integer value
         OCT                         Returns octal representation of an integer value
+        POWER | POW                 Raise the value to the specified power
         CONTAINS                    Returns true, if file contains string, false if not
         COALESCE                    Returns first nonempty expression value
         CONCAT                      Returns concatenated string of expression values
@@ -371,9 +385,9 @@ Functions:
 Expressions:
     Operators:
         = | == | eq                 Used to check for equality between the column field and value
-        ===                         Used to check for strict equality between column field and value irregardless of any special regex characters
+        === | eeq                   Used to check for strict equality between column field and value irregardless of any special regex characters
         != | <> | ne                Used to check for inequality between column field and value
-        !==                         Used to check for inequality between column field and value irregardless of any special regex characters
+        !== | ene                   Used to check for inequality between column field and value irregardless of any special regex characters
         < | lt                      Used to check whether the column value is less than the value
         <= | lte | le               Used to check whether the column value is less than or equal to the value
         > | gt                      Used to check whether the column value is greater than the value

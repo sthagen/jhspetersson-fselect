@@ -13,6 +13,8 @@ use crate::query::OutputFormat;
 use crate::query::Query;
 use crate::query::Root;
 use crate::query::TraversalMode::{Bfs, Dfs};
+use std::path::PathBuf;
+use directories::UserDirs;
 
 pub struct Parser {
     lexems: Vec<Lexem>,
@@ -76,7 +78,7 @@ impl Parser {
                 },
                 Some(Lexem::String(ref s)) | Some(Lexem::RawString(ref s)) | Some(Lexem::ArithmeticOperator(ref s)) => {
                     if s.to_ascii_lowercase() != "select" {
-                        if s == "*" && fields.is_empty() {
+                        if s == "*" {
                             #[cfg(unix)]
                                 {
                                     fields.push(Expr::field(Field::Mode));
@@ -85,6 +87,7 @@ impl Parser {
                                 }
 
                             fields.push(Expr::field(Field::Size));
+                            fields.push(Expr::field(Field::Modified));
                             fields.push(Expr::field(Field::Path));
                         } else {
                             self.drop_lexem();
@@ -161,6 +164,14 @@ impl Parser {
                                 match mode {
                                     RootParsingMode::From | RootParsingMode::Comma => {
                                         path = s.to_string();
+                                        if path.starts_with("~") {
+                                            let mut pb = PathBuf::from(path.clone());
+                                            pb = pb.components().skip(1).collect();
+                                            if let Some(ud) = UserDirs::new() {
+                                                pb = ud.home_dir().to_path_buf().join(pb);
+                                                path = pb.to_string_lossy().to_string();
+                                            }
+                                        }
                                         mode = RootParsingMode::Root;
                                     },
                                     RootParsingMode::Root | RootParsingMode::Options => {
@@ -751,5 +762,16 @@ mod tests {
         let query = p.parse(&query, false);
 
         assert!(query.is_err());
+    }
+
+    #[test]
+    fn path_with_spaces() {
+        let query = "select name from '/opt/Some Cool Dir/Test This'";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        assert_eq!(query.roots, vec![
+            Root::new(String::from("/opt/Some Cool Dir/Test This"), 0, 0, false, false, None, None, None, Bfs, false),
+        ]);
     }
 }
