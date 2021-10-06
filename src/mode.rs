@@ -32,10 +32,20 @@ pub fn format_mode(mode: u32) -> String {
 fn get_mode_unix(mode: u32) -> String {
     let mut s = String::new();
 
-    if mode_is_directory(mode) {
+    if mode_is_link(mode) {
+        s.push('l')
+    } else if mode_is_block_device(mode) {
+        s.push('b')
+    } else if mode_is_char_device(mode) {
+        s.push('c')
+    } else if mode_is_socket(mode) {
+        s.push('s')
+    } else if mode_is_pipe(mode) {
+        s.push('p')
+    } else if mode_is_directory(mode) {
         s.push('d')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     // user
@@ -43,19 +53,27 @@ fn get_mode_unix(mode: u32) -> String {
     if mode_user_read(mode) {
         s.push('r')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_user_write(mode) {
         s.push('w')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_user_exec(mode) {
-        s.push('x')
+        if mode_suid(mode) {
+            s.push('s')
+        } else {
+            s.push('x')
+        }
     } else {
-        s.push('-');
+        if mode_suid(mode) {
+            s.push('S')
+        } else {
+            s.push('-')
+        }
     }
 
     // group
@@ -63,19 +81,27 @@ fn get_mode_unix(mode: u32) -> String {
     if mode_group_read(mode) {
         s.push('r')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_group_write(mode) {
         s.push('w')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_group_exec(mode) {
-        s.push('x')
+        if mode_sgid(mode) {
+            s.push('s')
+        } else {
+            s.push('x')
+        }
     } else {
-        s.push('-');
+        if mode_sgid(mode) {
+            s.push('S')
+        } else {
+            s.push('-')
+        }
     }
 
     // other
@@ -83,19 +109,27 @@ fn get_mode_unix(mode: u32) -> String {
     if mode_other_read(mode) {
         s.push('r')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_other_write(mode) {
         s.push('w')
     } else {
-        s.push('-');
+        s.push('-')
     }
 
     if mode_other_exec(mode) {
-        s.push('x')
+        if mode_sticky(mode) {
+            s.push('t')
+        } else {
+            s.push('x')
+        }
     } else {
-        s.push('-');
+        if mode_sticky(mode) {
+            s.push('T')
+        } else {
+            s.push('-')
+        }
     }
 
     s
@@ -245,7 +279,7 @@ pub fn suid_bit_set(meta: &Metadata) -> bool {
 }
 
 pub fn mode_suid(mode: u32) -> bool {
-    mode & S_IFMT & S_ISUID == S_IFMT & S_ISUID
+    mode & S_ISUID == S_ISUID
 }
 
 pub fn sgid_bit_set(meta: &Metadata) -> bool {
@@ -256,7 +290,12 @@ pub fn sgid_bit_set(meta: &Metadata) -> bool {
 }
 
 pub fn mode_sgid(mode: u32) -> bool {
-    mode & S_IFMT & S_ISGID == S_IFMT & S_ISGID
+    mode & S_ISGID == S_ISGID
+}
+
+#[cfg(unix)]
+pub fn mode_sticky(mode: u32) -> bool {
+    mode & S_ISVTX == S_ISVTX
 }
 
 pub fn is_pipe(meta: &Metadata) -> bool {
@@ -267,7 +306,7 @@ pub fn is_pipe(meta: &Metadata) -> bool {
 }
 
 pub fn mode_is_pipe(mode: u32) -> bool {
-    mode & S_IFMT & S_IFIFO == S_IFMT & S_IFIFO
+    mode & S_IFIFO == S_IFIFO
 }
 
 pub fn is_char_device(meta: &Metadata) -> bool {
@@ -278,7 +317,7 @@ pub fn is_char_device(meta: &Metadata) -> bool {
 }
 
 pub fn mode_is_char_device(mode: u32) -> bool {
-    mode & S_IFMT & S_IFCHR == S_IFMT & S_IFCHR
+    mode & S_IFCHR == S_IFCHR
 }
 
 pub fn is_block_device(meta: &Metadata) -> bool {
@@ -289,11 +328,17 @@ pub fn is_block_device(meta: &Metadata) -> bool {
 }
 
 pub fn mode_is_block_device(mode: u32) -> bool {
-    mode & S_IFMT & S_IFBLK == S_IFMT & S_IFBLK
+    mode & S_IFBLK == S_IFBLK
 }
 
+#[cfg(unix)]
 pub fn mode_is_directory(mode: u32) -> bool {
-    mode & S_IFMT & S_IFDIR == S_IFMT & S_IFDIR
+    mode & S_IFDIR == S_IFDIR
+}
+
+#[cfg(unix)]
+pub fn mode_is_link(mode: u32) -> bool {
+    mode & S_IFLNK == S_IFLNK
 }
 
 pub fn is_socket(meta: &Metadata) -> bool {
@@ -304,7 +349,7 @@ pub fn is_socket(meta: &Metadata) -> bool {
 }
 
 pub fn mode_is_socket(mode: u32) -> bool {
-    mode & S_IFMT & S_IFSOCK == S_IFMT & S_IFSOCK
+    mode & S_IFSOCK == S_IFSOCK
 }
 
 const S_IRUSR: u32 = 0o400;
@@ -321,14 +366,16 @@ const S_IXOTH: u32 = 0o1;
 
 const S_ISUID: u32 = 0o4000;
 const S_ISGID: u32 = 0o2000;
-#[allow(unused)]
+#[cfg(unix)]
 const S_ISVTX: u32 = 0o1000;
 
-const S_IFMT: u32 = 0o170000;
 const S_IFBLK: u32 = 0o60000;
+#[cfg(unix)]
 const S_IFDIR: u32 = 0o40000;
 const S_IFCHR: u32 = 0o20000;
 const S_IFIFO: u32 = 0o10000;
+#[cfg(unix)]
+const S_IFLNK: u32 = 0o120000;
 const S_IFSOCK: u32 = 0o140000;
 
 #[cfg(windows)]
