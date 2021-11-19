@@ -41,16 +41,21 @@ More is under way!
 
 #### Other Linux
 
-[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.7.7/fselect-x86_64-linux-musl.gz).
+[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.7.8/fselect-x86_64-linux-musl.gz).
 
 #### Windows 64bit
 
-A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.7.7/fselect-x86_64-win.zip) is available at Github downloads.
+A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.7.8/fselect-x86_64-win.zip) is available at Github downloads.
 
-#### Windows from Chocolatey
+#### Windows via Chocolatey
 
 * Install [Chocolatey](https://chocolatey.org/install)
 * Run `choco install fselect`
+
+#### Windows via Sccop
+
+* Install [Scoop](https://scoop.sh)
+* Run `scoop install fselect`
 
 #### Mac via Homebrew
 
@@ -211,14 +216,17 @@ Shortcuts to common file extensions:
     fselect path from /home/user where is_archive = true
     fselect path, mime from /home/user where is_audio = 1
     fselect path, mime from /home/user where is_book != false
-    fselect path from /home/user where is_doc != 1
-    fselect path from /home/user where is_image = false
-    fselect path from /home/user where is_video != true
+
+Even simpler way of using boolean columns:
+
+    fselect path from /home/user where is_doc
+    fselect path from /home/user where is_image
+    fselect path from /home/user where is_video
     
 Find files with dangerous permissions:
     
-    fselect mode, path from /home/user where other_write = true or other_exec = true
-    fselect mode, path from /home/user where other_all = true
+    fselect mode, path from /home/user where other_write or other_exec
+    fselect mode, path from /home/user where other_all
     
 Simple glob-like expressions or even regular expressions on file mode are possible:
     
@@ -235,9 +243,9 @@ Or by owner's or group's name:
 
 Find special files:
 
-    fselect name from /usr/bin where suid = true
-    fselect path from /tmp where is_pipe = true
-    fselect path from /tmp where is_socket = 1
+    fselect name from /usr/bin where suid
+    fselect path from /tmp where is_pipe
+    fselect path from /tmp where is_socket
     
 Find files with xattrs, check if particular xattr exists, or get its value:
 

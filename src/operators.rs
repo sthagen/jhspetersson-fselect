@@ -6,7 +6,7 @@ pub enum LogicalOp {
     Or,
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq, PartialOrd, Serialize)]
 pub enum Op {
     Eq,
     Ne,
@@ -45,22 +45,26 @@ impl Op {
         let op = Op::from(text);
         match op {
             Some(op) if not => {
-                match op {
-                    Op::Eq => Some(Op::Ne),
-                    Op::Ne => Some(Op::Eq),
-                    Op::Eeq => Some(Op::Ene),
-                    Op::Ene => Some(Op::Eeq),
-                    Op::Gt => Some(Op::Lt),
-                    Op::Lt => Some(Op::Gt),
-                    Op::Gte => Some(Op::Lte),
-                    Op::Lte => Some(Op::Gte),
-                    Op::Rx => Some(Op::NotRx),
-                    Op::NotRx => Some(Op::Rx),
-                    Op::Like => Some(Op::NotLike),
-                    Op::NotLike => Some(Op::Like),
-                }
+                Some(Self::negate(op))
             },
             _ => op
+        }
+    }
+
+    pub fn negate(op: Op) -> Op {
+        match op {
+            Op::Eq => Op::Ne,
+            Op::Ne => Op::Eq,
+            Op::Eeq => Op::Ene,
+            Op::Ene => Op::Eeq,
+            Op::Gt => Op::Lt,
+            Op::Lt => Op::Gt,
+            Op::Gte => Op::Lte,
+            Op::Lte => Op::Gte,
+            Op::Rx => Op::NotRx,
+            Op::NotRx => Op::Rx,
+            Op::Like => Op::NotLike,
+            Op::NotLike => Op::Like,
         }
     }
 }
@@ -71,6 +75,7 @@ pub enum ArithmeticOp {
     Subtract,
     Divide,
     Multiply,
+    Modulo,
 }
 
 impl ArithmeticOp {
@@ -80,6 +85,7 @@ impl ArithmeticOp {
             "-" | "minus"  => Some(ArithmeticOp::Subtract),
             "*" | "mul" => Some(ArithmeticOp::Multiply),
             "/" | "div" => Some(ArithmeticOp::Divide),
+            "%" | "mod" => Some(ArithmeticOp::Modulo),
             _ => None
         }
     }
@@ -90,6 +96,7 @@ impl ArithmeticOp {
             ArithmeticOp::Subtract => left.to_float() - right.to_float(),
             ArithmeticOp::Multiply => left.to_float() * right.to_float(),
             ArithmeticOp::Divide => left.to_float() / right.to_float(),
+            ArithmeticOp::Modulo => left.to_float() % right.to_float(),
         };
 
         return Variant::from_float(result);

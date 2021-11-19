@@ -45,6 +45,8 @@ If you are on Windows, feel free to omit most of the quotes.
 
 Commas for column separation aren't needed as well. Column aliasing (with or without `as` keyword) is not supported.
 
+`where` section can contain short syntax conditions for boolean columns (like `is_audio` or `other_write`).
+
 `into` keyword specifies output format, not output table.
 
 Joins, unions, and subselects are not supported (yet?).
@@ -250,14 +252,14 @@ Let's try `FORMAT_SIZE` with different format specifiers:
 
 | Specifier | Meaning | Bytes |
 | --- | --- | --- |
-| `t` or `tib` | tebibyte | 1024 * 1024 * 1024 * 1024
-| `tb` | terabyte | 1000 * 1000 * 1000 * 1000
-| `g` or `gib` | gibibyte | 1024 * 1024 * 1024
-| `gb` | gigabyte | 1000 * 1000 * 1000
-| `m` or `mib` | mebibyte | 1024 * 1024
-| `mb` | megabyte | 1000 * 1000
-| `k` or `kib` | kibibyte | 1024
-| `kb` | kilobyte | 1000
+| `t` or `tib` | tebibyte | 1024 * 1024 * 1024 * 1024 |
+| `tb` | terabyte | 1000 * 1000 * 1000 * 1000 |
+| `g` or `gib` | gibibyte | 1024 * 1024 * 1024 |
+| `gb` | gigabyte | 1000 * 1000 * 1000 |
+| `m` or `mib` | mebibyte | 1024 * 1024 |
+| `mb` | megabyte | 1000 * 1000 |
+| `k` or `kib` | kibibyte | 1024 |
+| `kb` | kilobyte | 1000 |
 
     fselect size, path from /home/user/tmp where size gt 2g
     fselect fsize, path from /home/user/tmp where size = 5mib
@@ -300,6 +302,16 @@ When you put a directory to search at, you can specify some options.
 * `like`
 * `notlike`
 
+### Arithmetic operators
+
+| Operator | Alias |
+| --- | --- |
+| + | plus |
+| - | minus |
+| * | mul |
+| / | div |
+| % | mod |
+
 ### Date and time specifiers
 
 When you specify inexact date and time with `=` or `!=` operator, **fselect** understands it as an interval.
@@ -328,7 +340,7 @@ Other operators assume exact date and time, which could be specified in a more f
 
 ### Regular expressions ###
 
-[Rust flavor regular expressions](https://docs.rs/regex/1.1.0/regex/#syntax) are used.
+[Rust flavor regular expressions](https://docs.rs/regex/1.5.4/regex/#syntax) are used.
 
 ### MIME and file types
 

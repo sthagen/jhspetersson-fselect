@@ -46,9 +46,12 @@ impl Parser {
         let mut limit = self.parse_limit()?;
         let output_format = self.parse_output_format()?;
 
-        if self.is_something_left() {
-            dbg!(fields);
-            dbg!(roots);
+        if self.there_are_remaining_lexems() {
+            if debug {
+                dbg!(fields);
+                dbg!(roots);
+            }
+
             return Err(String::from("Could not parse tokens at the end of the query"));
         }
 
@@ -71,7 +74,7 @@ impl Parser {
         let mut fields = vec![];
 
         loop {
-            let lexem = self.get_lexem();
+            let lexem = self.next_lexem();
             match lexem {
                 Some(Lexem::Comma) => {
                     // skip
@@ -125,7 +128,7 @@ impl Parser {
         let mut roots: Vec<Root> = Vec::new();
         let mut mode = RootParsingMode::Unknown;
 
-        let lexem = self.get_lexem();
+        let lexem = self.next_lexem();
         match lexem {
             Some(ref lexem) => {
                 match lexem {
@@ -156,7 +159,7 @@ impl Parser {
             let mut regexp = false;
 
             loop {
-                let lexem = self.get_lexem();
+                let lexem = self.next_lexem();
                 match lexem {
                     Some(ref lexem) => {
                         match lexem {
@@ -308,7 +311,7 @@ impl Parser {
     */
 
     fn parse_where(&mut self) -> Result<Option<Expr>, String> {
-        match self.get_lexem() {
+        match self.next_lexem() {
             Some(Lexem::Where) => {
                 self.parse_expr()
             },
@@ -324,7 +327,7 @@ impl Parser {
 
         let mut right: Option<Expr> = None;
         loop {
-            let lexem = self.get_lexem();
+            let lexem = self.next_lexem();
             match lexem {
                 Some(Lexem::Or) => {
                     let expr = self.parse_and()?;
@@ -350,7 +353,7 @@ impl Parser {
 
         let mut right: Option<Expr> = None;
         loop {
-            let lexem = self.get_lexem();
+            let lexem = self.next_lexem();
             match lexem {
                 Some(Lexem::And) => {
                     let expr = self.parse_cond()?;
@@ -372,11 +375,22 @@ impl Parser {
     }
 
     fn parse_cond(&mut self) -> Result<Option<Expr>, String> {
+        let mut negate = false;
+
+        loop {
+            if let Some(Lexem::Not) = self.next_lexem() {
+                negate = !negate;
+            } else {
+                self.drop_lexem();
+                break;
+            }
+        }
+
         let left = self.parse_add_sub()?;
 
         let mut not = false;
 
-        let lexem = self.get_lexem();
+        let lexem = self.next_lexem();
         match lexem {
             Some(Lexem::Not) => {
                 not = true;
@@ -386,8 +400,8 @@ impl Parser {
             }
         };
 
-        let lexem = self.get_lexem();
-        match lexem {
+        let lexem = self.next_lexem();
+        let mut result = match lexem {
             Some(Lexem::Operator(s)) => {
                 let right = self.parse_add_sub()?;
                 let op = Op::from_with_not(s, not);
@@ -397,7 +411,23 @@ impl Parser {
                 self.drop_lexem();
                 Ok(left)
             }
+        };
+
+        if let Ok(Some(expr)) = result.clone() {
+            if let Some(field) = expr.field {
+                if expr.left.is_none() && expr.right.is_none() && field.is_boolean_field() {
+                    result = Ok(Some(Expr::op(Expr::field(field), Op::Eq, Expr::value(String::from("true")))));
+                }
+            }
         }
+
+        if negate {
+            if let Ok(Some(expr)) = result.clone() {
+                return Ok(Some(Self::negate_expr_op(&expr)));
+            }
+        }
+
+        result
     }
 
     fn parse_add_sub(&mut self) -> Result<Option<Expr>, String> {
@@ -405,7 +435,7 @@ impl Parser {
 
         let mut op = None;
         loop {
-            let lexem = self.get_lexem();
+            let lexem = self.next_lexem();
             if let Some(Lexem::ArithmeticOperator(s)) = lexem {
                 let new_op = ArithmeticOp::from(s);
                 match new_op {
@@ -439,11 +469,11 @@ impl Parser {
 
         let mut op = None;
         loop {
-            let lexem = self.get_lexem();
+            let lexem = self.next_lexem();
             if let Some(Lexem::ArithmeticOperator(s)) = lexem {
                 let new_op = ArithmeticOp::from(s);
                 match new_op {
-                    Some(ArithmeticOp::Multiply) | Some(ArithmeticOp::Divide) => {
+                    Some(ArithmeticOp::Multiply) | Some(ArithmeticOp::Divide) | Some(ArithmeticOp::Modulo)  => {
                         let expr = self.parse_paren()?;
                         if op.is_none() {
                             op = new_op.clone();
@@ -469,9 +499,9 @@ impl Parser {
     }
 
     fn parse_paren(&mut self) -> Result<Option<Expr>, String> {
-        if let Some(Lexem::Open) = self.get_lexem() {
+        if let Some(Lexem::Open) = self.next_lexem() {
             let result = self.parse_expr();
-            if let Some(Lexem::Close) = self.get_lexem() {
+            if let Some(Lexem::Close) = self.next_lexem() {
                 result
             } else {
                 Err("Unmatched parenthesis".to_string())
@@ -483,13 +513,13 @@ impl Parser {
     }
 
     fn parse_func_scalar(&mut self) -> Result<Option<Expr>, String> {
-        let mut lexem = self.get_lexem();
+        let mut lexem = self.next_lexem();
         let mut minus = false;
 
         if let Some(Lexem::ArithmeticOperator(ref s)) = lexem {
             if s == "-" {
                 minus = true;
-                lexem = self.get_lexem();
+                lexem = self.next_lexem();
             } else if s == "+" {
                 // nop
             } else {
@@ -530,7 +560,7 @@ impl Parser {
     fn parse_function(&mut self, function: Function) -> Result<Expr, String> {
         let mut function_expr = Expr::function(function);
 
-        if let Some(lexem) = self.get_lexem() {
+        if let Some(lexem) = self.next_lexem() {
             if lexem != Lexem::Open {
                 return Err("Error in function expression".to_string());
             }
@@ -545,7 +575,7 @@ impl Parser {
         let mut args = vec![];
 
         loop {
-            match self.get_lexem() {
+            match self.next_lexem() {
                 Some(lexem) if lexem == Lexem::Comma => {
                     match self.parse_expr() {
                         Ok(Some(expr)) => args.push(expr),
@@ -569,10 +599,10 @@ impl Parser {
         let mut order_by_fields: Vec<Expr> = vec![];
         let mut order_by_directions: Vec<bool> = vec![];
 
-        if let Some(Lexem::Order) = self.get_lexem() {
-            if let Some(Lexem::By) = self.get_lexem() {
+        if let Some(Lexem::Order) = self.next_lexem() {
+            if let Some(Lexem::By) = self.next_lexem() {
                 loop {
-                    match self.get_lexem() {
+                    match self.next_lexem() {
                         Some(Lexem::Comma) => {},
                         Some(Lexem::RawString(ref ordering_field)) => {
                             let actual_field = match ordering_field.parse::<usize>() {
@@ -607,10 +637,10 @@ impl Parser {
 
 
     fn parse_limit(&mut self) -> Result<u32, &str> {
-        let lexem = self.get_lexem();
+        let lexem = self.next_lexem();
         match lexem {
             Some(Lexem::Limit) => {
-                let lexem = self.get_lexem();
+                let lexem = self.next_lexem();
                 match lexem {
                     Some(Lexem::RawString(s)) | Some(Lexem::String(s)) => {
                         if let Ok(limit) = s.parse() {
@@ -634,10 +664,10 @@ impl Parser {
     }
 
     fn parse_output_format(&mut self) -> Result<OutputFormat, &str>{
-        let lexem = self.get_lexem();
+        let lexem = self.next_lexem();
         match lexem {
             Some(Lexem::Into) => {
-                let lexem = self.get_lexem();
+                let lexem = self.next_lexem();
                 match lexem {
                     Some(Lexem::RawString(s)) | Some(Lexem::String(s)) => {
                         return match OutputFormat::from(&s) {
@@ -659,11 +689,16 @@ impl Parser {
         Ok(OutputFormat::Tabs)
     }
 
-    fn is_something_left(&mut self) -> bool {
-        self.get_lexem().is_some()
+    fn there_are_remaining_lexems(&mut self) -> bool {
+        let result = self.next_lexem().is_some();
+        if result {
+            self.drop_lexem();
+        }
+
+        result
     }
 
-    fn get_lexem(&mut self) -> Option<Lexem> {
+    fn next_lexem(&mut self) -> Option<Lexem> {
         let lexem = self.lexems.get(self.index );
         self.index += 1;
 
@@ -675,6 +710,24 @@ impl Parser {
 
     fn drop_lexem(&mut self) {
         self.index -= 1;
+    }
+
+    fn negate_expr_op(expr: &Expr) -> Expr {
+        let mut result = expr.clone();
+
+        if let Some(left) = &expr.left {
+            result.left = Some(Box::from(Self::negate_expr_op(&left)));
+        }
+
+        if let &Some(op) = &expr.op {
+            result.op = Some(Op::negate(op));
+        }
+
+        if let Some(right) = &expr.right {
+            result.right = Some(Box::from(Self::negate_expr_op(&right)));
+        }
+
+        result
     }
 }
 
@@ -756,6 +809,71 @@ mod tests {
     }
 
     #[test]
+    fn query_with_single_not() {
+        let query = "select name from /test where not name like '%.tmp'";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        assert_eq!(query.fields, vec![Expr::field(Field::Name)]);
+
+        assert_eq!(query.roots, vec![
+            Root::new(String::from("/test"), 0, 0, false, false, None, None, None, Bfs, false),
+        ]);
+
+        let expr = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tmp")));
+
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn query_with_multiple_not() {
+        let query = "select name from /test where not name like '%.tmp' and not name like '%.tst'";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let left = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tmp")));
+        let right = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tst")));
+        let expr = Expr::logical_op(left, LogicalOp::And, right);
+
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn query_with_multiple_not_paren() {
+        let query = "select name from /test where (not name like '%.tmp') and (not name like '%.tst')";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let left = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tmp")));
+        let right = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tst")));
+        let expr = Expr::logical_op(left, LogicalOp::And, right);
+
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn query_double_not() {
+        let query = "select name from /test where not not name like '%.tmp'";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let expr = Expr::op(Expr::field(Field::Name), Op::Like, Expr::value(String::from("%.tmp")));
+
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn query_triple_not() {
+        let query = "select name from /test where not not not name like '%.tmp'";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let expr = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tmp")));
+
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
     fn broken_query() {
         let query = "select name, path ,size , fsize from / where name != 'foobar' order by size desc limit 10 into csv this is unexpected";
         let mut p = Parser::new();
@@ -773,5 +891,18 @@ mod tests {
         assert_eq!(query.roots, vec![
             Root::new(String::from("/opt/Some Cool Dir/Test This"), 0, 0, false, false, None, None, None, Bfs, false),
         ]);
+    }
+
+    #[test]
+    fn simple_boolean_syntax() {
+        let query = "select name from /home/user where is_audio or is_video";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let query2 = "select name from /home/user where is_audio = true or is_video = true";
+        let mut p2 = Parser::new();
+        let query2 = p2.parse(&query2, false).unwrap();
+
+        assert_eq!(query.expr, query2.expr);
     }
 }
