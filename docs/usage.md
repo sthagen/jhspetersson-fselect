@@ -37,6 +37,8 @@ It's ok to use any metacharacters in interactive mode.
 Directories to search at are listed with comma separators.
 In a real SQL such syntax would make a cross product. Here it means just search at A, next at B, and so on.
 
+You can use curly braces instead of the regular parentheses! This helps to avoid a few of shell pitfalls a little bit.
+
 String literals don't really need quotes. 
 You will need to put them just in case you query something with spaces inside. 
 And yes, you should use quotes for glob-patterns or regular expressions in the query 
@@ -189,17 +191,18 @@ Supported platforms are Linux, MacOS, FreeBSD, and NetBSD.
 
 Used mostly for formatting results.
 
-| Function | Meaning | Example |
-| --- | --- | --- |
-| LENGTH or LEN | Length of string value | `select length(name) from /home/user/Downloads order by 1 desc limit 10` |
-| LOWER or LOWERCASE or LCASE | Convert value to lowercase | `select lower(name) from /home/user/Downloads` |
-| UPPER or UPPERCASE or UCASE | Convert value to uppercase | `select upper(name) from /home/user/Downloads` |
-| BASE64 | Encode value to Base64 | `select base64(name) from /home/user/Downloads` |
-| SUBSTRING or SUBSTR (str, pos, len) | Part of `str` value starting from `pos` of (optionally) `len` characters long. Negative `pos` means starting `pos` characters from the end of the string.  | `select substr(name, 1, 8) from /home/user/Downloads` |
-| REPLACE (str, from, to) | Replace all occurrences of `from` by `to` | `select replace(name, metallica, MetaLLicA) from /home/user/Music/Rock` |
-| TRIM | Returns string with whitespaces at the beginning and the end stripped | `select trim(title), trim(artist), trim(album) from /home/user/Music into json` |
-| LTRIM | Returns string with whitespaces at the beginning stripped | `select ltrim(title) from /home/user/Music into json` |
-| RTRIM | Returns string with whitespaces at the end stripped | `select rtrim(title) from /home/user/Music into json` |
+| Function                            | Meaning                                                                                                                                                   | Example                                                                         |
+|-------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
+| LENGTH or LEN                       | Length of string value                                                                                                                                    | `select length(name) from /home/user/Downloads order by 1 desc limit 10`        |
+| LOWER or LOWERCASE or LCASE         | Convert value to lowercase                                                                                                                                | `select lower(name) from /home/user/Downloads`                                  |
+| UPPER or UPPERCASE or UCASE         | Convert value to uppercase                                                                                                                                | `select upper(name) from /home/user/Downloads`                                  |
+| TO_BASE64 or BASE64                 | Encode value to Base64                                                                                                                                    | `select base64(name) from /home/user/Downloads`                                 |
+| FROM_BASE64                         | Decode value from Base64                                                                                                                                  | `select from_base64('ZnNlbGVjdCByb2Nrcw==')`                                    |
+| SUBSTRING or SUBSTR (str, pos, len) | Part of `str` value starting from `pos` of (optionally) `len` characters long. Negative `pos` means starting `pos` characters from the end of the string. | `select substr(name, 1, 8) from /home/user/Downloads`                           |
+| REPLACE (str, from, to)             | Replace all occurrences of `from` by `to`                                                                                                                 | `select replace(name, metallica, MetaLLicA) from /home/user/Music/Rock`         |
+| TRIM                                | Returns string with whitespaces at the beginning and the end stripped                                                                                     | `select trim(title), trim(artist), trim(album) from /home/user/Music into json` |
+| LTRIM                               | Returns string with whitespaces at the beginning stripped                                                                                                 | `select ltrim(title) from /home/user/Music into json`                           |
+| RTRIM                               | Returns string with whitespaces at the end stripped                                                                                                       | `select rtrim(title) from /home/user/Music into json`                           |
 
 #### Japanese string functions
 

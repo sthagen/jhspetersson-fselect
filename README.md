@@ -2,7 +2,7 @@
 Find files with SQL-like queries
 
 [![Crates.io](https://img.shields.io/crates/v/fselect.svg)](https://crates.io/crates/fselect)
-[![Build Status](https://travis-ci.org/jhspetersson/fselect.svg?branch=master)](https://travis-ci.org/jhspetersson/fselect)
+[![build](https://github.com/jhspetersson/fselect/actions/workflows/rust.yml/badge.svg)](https://github.com/jhspetersson/fselect/actions/workflows/rust.yml)
 
 ### Why use fselect?
 
@@ -41,11 +41,11 @@ More is under way!
 
 #### Other Linux
 
-[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.7.9/fselect-x86_64-linux-musl.gz).
+[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.8.0/fselect-x86_64-linux-musl.gz).
 
 #### Windows 64bit
 
-A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.7.9/fselect-x86_64-win.zip) is available at Github downloads.
+A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.8.0/fselect-x86_64-win.zip) is available at Github downloads.
 
 #### Windows via Chocolatey
 
@@ -112,9 +112,9 @@ More complex query:
 
     fselect "name from /tmp where (name = *.tmp and size = 0) or (name = *.cfg and size > 1000000)"
     
-Aggregate functions:
+Aggregate functions (you can use curly braces if you want, and even combine them with the regular parentheses):
 
-    fselect "MIN(size), MAX(size), AVG(size), SUM(size), COUNT(*) from /home/user/Downloads"
+    fselect "MIN(size), MAX{size}, AVG(size), SUM{size}, COUNT(*) from /home/user/Downloads"
     
 Formatting functions:
 

@@ -108,7 +108,7 @@ impl Parser {
                         }
                     }
                 },
-                Some(Lexem::Open) => {
+                Some(Lexem::Open) | Some(Lexem::CurlyOpen) => {
                     self.drop_lexem();
                     if let Ok(Some(field)) = self.parse_expr() {
                         fields.push(field);
@@ -422,6 +422,11 @@ impl Parser {
                 if expr.left.is_none() && expr.right.is_none() && field.is_boolean_field() {
                     result = Ok(Some(Expr::op(Expr::field(field), Op::Eq, Expr::value(String::from("true")))));
                 }
+            } else if let Some(function) = expr.function {
+                if expr.left.is_some() && expr.right.is_none() && (expr.args.is_none() || expr.args.unwrap().is_empty()) && function.is_boolean_function() {
+                    let func_expr = Expr::function_left(function, *expr.left.unwrap());
+                    result = Ok(Some(Expr::op(func_expr, Op::Eq, Expr::value(String::from("true")))));
+                }
             }
         }
 
@@ -503,16 +508,27 @@ impl Parser {
     }
 
     fn parse_paren(&mut self) -> Result<Option<Expr>, String> {
-        if let Some(Lexem::Open) = self.next_lexem() {
-            let result = self.parse_expr();
-            if let Some(Lexem::Close) = self.next_lexem() {
-                result
-            } else {
-                Err("Unmatched parenthesis".to_string())
+        match self.next_lexem() {
+            Some(Lexem::Open) => {
+                let result = self.parse_expr();
+                if let Some(Lexem::Close) = self.next_lexem() {
+                    result
+                } else {
+                    Err("Unmatched parenthesis".to_string())
+                }
+            },
+            Some(Lexem::CurlyOpen) => {
+                let result = self.parse_expr();
+                if let Some(Lexem::CurlyClose) = self.next_lexem() {
+                    result
+                } else {
+                    Err("Unmatched parenthesis".to_string())
+                }
+            },
+            _ => {
+                self.drop_lexem();
+                self.parse_func_scalar()
             }
-        } else {
-            self.drop_lexem();
-            self.parse_func_scalar()
         }
     }
 
@@ -564,9 +580,14 @@ impl Parser {
     fn parse_function(&mut self, function: Function) -> Result<Expr, String> {
         let mut function_expr = Expr::function(function);
 
+        let mut curly_mode = false;
         if let Some(lexem) = self.next_lexem() {
-            if lexem != Lexem::Open {
+            if lexem != Lexem::Open && lexem != Lexem::CurlyOpen {
                 return Err("Error in function expression".to_string());
+            }
+
+            if lexem == Lexem::CurlyOpen {
+                curly_mode = true;
             }
         }
 
@@ -588,7 +609,7 @@ impl Parser {
                         }
                     }
                 },
-                Some(lexem) if lexem == Lexem::Close => {
+                Some(lexem) if (lexem == Lexem::Close && !curly_mode) || (lexem == Lexem::CurlyClose && curly_mode) => {
                     function_expr.args = Some(args);
                     return Ok(function_expr);
                 },
@@ -911,6 +932,19 @@ mod tests {
     }
 
     #[test]
+    fn simple_boolean_function_syntax() {
+        let query = "select name from /home/user where CONTAINS('foobar') or CONTAINS('bazz')";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let query2 = "select name from /home/user where CONTAINS('foobar') = true or CONTAINS('bazz') = true";
+        let mut p2 = Parser::new();
+        let query2 = p2.parse(&query2, false).unwrap();
+
+        assert_eq!(query.expr, query2.expr);
+    }
+
+    #[test]
     fn from_at_the_end_of_the_query() {
         let query = "select name where not name like '%.tmp' from /test gitignore mindepth 2";
         let mut p = Parser::new();
@@ -925,5 +959,18 @@ mod tests {
         let expr = Expr::op(Expr::field(Field::Name), Op::NotLike, Expr::value(String::from("%.tmp")));
 
         assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn use_curly_braces() {
+        let query = "select name, (1 + 2) from /home/user limit 1";
+        let mut p = Parser::new();
+        let query = p.parse(&query, false).unwrap();
+
+        let query2 = "select name, {1 + 2} from /home/user limit 1";
+        let mut p2 = Parser::new();
+        let query2 = p2.parse(&query2, false).unwrap();
+
+        assert_eq!(query.expr, query2.expr);
     }
 }
