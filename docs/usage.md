@@ -224,6 +224,7 @@ Used for detecting Japanese symbols in file names and such.
 | HEX | Convert integer value to hexadecimal representation | `select name, size, hex(size), upper(hex(size)) from /home/user/Downloads` |
 | OCT | Convert integer value to octal representation | `select name, size, oct(size) from /home/user/Downloads` |
 | POWER or POW | Raise the value to the specified power | `select pow(2, 3)` |
+| SQRT | Returns square root of the value | `select sqrt(25)` |
 | CONTAINS | `true` if file contains string, `false` if not | `select contains(TODO) from /home/user/Projects/foo/src` |
 | COALESCE | Returns first nonempty expression value | `select name, size, COALESCE(sha256, '---') from /home/user/Downloads` |
 | CONCAT | Returns concatenated string of expression values | `select CONCAT('Name is ', name, ' size is ', fsize, '!!!') from /home/user/Downloads` |
@@ -361,15 +362,15 @@ Assumptions are being made based on file extension.
 
 The lists below could be edited with the configuration file. 
 
-| Search field | Extensions                                                                                                                                                                                                                                 |
-| --- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `is_archive` | .7z, .bz2, .bzip2, .gz, .gzip, .lz, .rar, .tar, .xz, .zip                                                                                                                                                                                  |
-| `is_audio` | .aac, .aiff, .amr, .flac, .gsm, .m4a, .m4b, .m4p, .mp3, .ogg, .wav, .wma                                                                                                                                                                   |
-| `is_book` | .azw3, .chm, .djvu, .epub, .fb2, .mobi, .pdf                                                                                                                                                                                               |
-| `is_doc` | .accdb, .doc, .docm, .docx, .dot, .dotm, .dotx, .mdb, .odp, .ods, .odt, .pdf, .potm, .potx, .ppt, .pptm, .pptx, .rtf, .xlm, .xls, .xlsm, .xlsx, .xlt, .xltm, .xltx, .xps                                                                   |
-| `is_image` | .bmp, .gif, .heic, .jpeg, .jpg, .jxl, .png, .svg, .tiff, .webp                                                                                                                                                                             |
-| `is_source` | .asm, .bas, .c, .cc, .ceylon, .clj, .coffee, .cpp, .cs, .d, .dart, .elm, .erl, .go, .groovy, .h, .hh, .hpp, .java, .jl, .js, .jsp, .jsx, .kt, .kts, .lua, .nim, .pas, .php, .pl, .pm, .py, .rb, .rs, .scala, .swift, .tcl, .ts, .vala, .vb |
-| `is_video` | .3gp, .avi, .flv, .m4p, .m4v, .mkv, .mov, .mp4, .mpeg, .mpg, .webm, .wmv                                                                                                                                                                   |
+| Search field | Extensions                                                                                                                                                                                                                                       |
+| --- |--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `is_archive` | .7z, .bz2, .bzip2, .gz, .gzip, .lz, .rar, .tar, .xz, .zip                                                                                                                                                                                        |
+| `is_audio` | .aac, .aiff, .amr, .flac, .gsm, .m4a, .m4b, .m4p, .mp3, .ogg, .wav, .wma                                                                                                                                                                         |
+| `is_book` | .azw3, .chm, .djvu, .epub, .fb2, .mobi, .pdf                                                                                                                                                                                                     |
+| `is_doc` | .accdb, .doc, .docm, .docx, .dot, .dotm, .dotx, .mdb, .odp, .ods, .odt, .pdf, .potm, .potx, .ppt, .pptm, .pptx, .rtf, .xlm, .xls, .xlsm, .xlsx, .xlt, .xltm, .xltx, .xps                                                                         |
+| `is_image` | .bmp, .gif, .heic, .jpeg, .jpg, .jxl, .png, .svg, .tiff, .webp                                                                                                                                                                                   |
+| `is_source` | .asm, .bas, .c, .cc, .ceylon, .clj, .coffee, .cpp, .cs, .d, .dart, .elm, .erl, .go, .groovy, .h, .hh, .hpp, .java, .jl, .js, .jsp, .jsx, .kt, .kts, .lua, .nim, .pas, .php, .pl, .pm, .py, .rb, .rs, .scala, .swift, .tcl, .ts, .vala, .vb, .zig |
+| `is_video` | .3gp, .avi, .flv, .m4p, .m4v, .mkv, .mov, .mp4, .mpeg, .mpg, .webm, .wmv                                                                                                                                                                         |
 
     fselect is_archive, path from /home/user
     fselect is_audio, is_video, path from /home/user/multimedia
