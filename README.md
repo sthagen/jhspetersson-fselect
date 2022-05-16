@@ -41,18 +41,18 @@ More is under way!
 
 #### Other Linux
 
-[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.8.0/fselect-x86_64-linux-musl.gz).
+[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.8.1/fselect-x86_64-linux-musl.gz).
 
 #### Windows 64bit
 
-A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.8.0/fselect-x86_64-win.zip) is available at Github downloads.
+A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.8.1/fselect-x86_64-win.zip) is available at Github downloads.
 
 #### Windows via Chocolatey
 
 * Install [Chocolatey](https://chocolatey.org/install)
 * Run `choco install fselect`
 
-#### Windows via Sccop
+#### Windows via Scoop
 
 * Install [Scoop](https://scoop.sh)
 * Run `scoop install fselect`
