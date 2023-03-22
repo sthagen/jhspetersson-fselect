@@ -285,6 +285,7 @@ Column Options:
     is_socket                       Returns a boolean signifying whether the file path is a socket file
     is_hidden                       Returns a boolean signifying whether the file is a hidden file (e.g., files that start with a dot on *nix)
     has_xattrs                      Returns a boolean signifying whether the file has extended attributes
+    capabilities | caps             Returns a string describing Linux capabilities assigned to a file
 
     device (Linux only)             Returns the code of device the file is stored on
     inode (Linux only)              Returns the number of inode
@@ -379,7 +380,8 @@ Functions:
     Xattr:
         HAS_XATTR                   Used to check if xattr exists (unix-only)
         XATTR                       Returns value of xattr (unix-only)
-        HAS_CAPABILITIES | HAS_CAPS Check if Linux capability exists for the file
+        HAS_CAPABILITIES | HAS_CAPS Check if any Linux capability exists for the file
+        HAS_CAPABILITY or HAS_CAP   Check if given Linux capability exists for the file
     String:
         LENGTH | LEN                Returns length of string value
         LOWER | LOWERCASE | LCASE   Returns lowercase value
