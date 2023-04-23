@@ -160,13 +160,13 @@ Queries using these functions return only one result row.
 
 Used mostly for formatting results.
 
-| Function | Meaning | Example |
-| --- | --- | --- |
-| CURRENT_DATE or CURDATE | Returns current date | `select modified, path where modified = CURDATE()` |
-| DAY | Extract day of the month | `select day(modified) from /home/user/Downloads` |
-| MONTH | Extract month of the year | `select month(name) from /home/user/Downloads` |
-| YEAR | Extract year of the date | `select year(name) from /home/user/Downloads` |
-| DOW or DAYOFWEEK | Returns day of the week (1 - Sunday, 2 - Monday, etc.) | `select name, modified, dow(modified) from /home/user/projects/FizzBuzz` |
+| Function                            | Meaning | Example |
+|-------------------------------------| --- | --- |
+| CURRENT_DATE or CUR_DATE or CURDATE | Returns current date | `select modified, path where modified = CURDATE()` |
+| DAY                                 | Extract day of the month | `select day(modified) from /home/user/Downloads` |
+| MONTH                               | Extract month of the year | `select month(name) from /home/user/Downloads` |
+| YEAR                                | Extract year of the date | `select year(name) from /home/user/Downloads` |
+| DOW or DAYOFWEEK                    | Returns day of the week (1 - Sunday, 2 - Monday, etc.) | `select name, modified, dow(modified) from /home/user/projects/FizzBuzz` |
 
 #### User functions
 
@@ -349,7 +349,7 @@ Other operators assume exact date and time, which could be specified in a more f
 
 ### Regular expressions ###
 
-[Rust flavor regular expressions](https://docs.rs/regex/1.5.4/regex/#syntax) are used.
+[Rust flavor regular expressions](https://docs.rs/regex/latest/regex/index.html#syntax) are used.
 
 ### MIME and file types
 

@@ -17,7 +17,7 @@ use serde::ser::{Serialize, Serializer};
 use xattr::FileExt;
 
 use crate::fileinfo::FileInfo;
-use crate::util::{capitalize, format_date};
+use crate::util::{capitalize, error_message, format_date};
 use crate::util::format_datetime;
 use crate::util::parse_datetime;
 use crate::util::parse_filesize;
@@ -206,7 +206,10 @@ impl Variant {
                 Ok((dt_from, dt_to)) => {
                     return (dt_from, dt_to);
                 },
-                _ => panic!("Illegal datetime format")
+                _ => {
+                    error_message("Can't parse datetime", &self.string_value);
+                    std::process::exit(2);
+                }
             }
         }
 
@@ -325,7 +328,7 @@ impl FromStr for Function {
             "coalesce" => Ok(Function::Coalesce),
             "format_size" | "format_filesize" => Ok(Function::FormatSize),
 
-            "current_date" | "curdate" => Ok(Function::CurrentDate),
+            "current_date" | "cur_date" | "curdate" => Ok(Function::CurrentDate),
             "day" => Ok(Function::Day),
             "month" => Ok(Function::Month),
             "year" => Ok(Function::Year),
