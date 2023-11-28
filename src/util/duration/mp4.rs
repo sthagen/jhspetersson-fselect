@@ -24,9 +24,30 @@ impl DurationExtractor for Mp4DurationExtractor {
             .and_then(|ref track| {
                 track.tkhd.as_ref().map(|tkhd| {
                     Duration {
-                        length: tkhd.duration as usize
+                        length: (tkhd.duration / 1000) as usize
                     }
                 })
             }))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Mp4DurationExtractor;
+    use crate::util::duration::DurationExtractor;
+    use crate::util::Duration;
+    use crate::PathBuf;
+    use std::error::Error;
+
+    #[test]
+    fn test_success() -> Result<(), Box<dyn Error>> {
+        let path_string =
+            std::env::var("CARGO_MANIFEST_DIR")? + "/resources/test/" + "video/rust-logo-blk.mp4";
+        let path = PathBuf::from(path_string);
+        assert_eq!(
+            Mp4DurationExtractor.try_read_duration(&path, &None)?,
+            Some(Duration { length: 1 }),
+        );
+        Ok(())
     }
 }
