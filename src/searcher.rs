@@ -14,6 +14,7 @@ use std::os::unix::fs::DirEntryExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use chrono::{DateTime, Local};
 use lscolors::{LsColors, Style};
@@ -60,7 +61,7 @@ pub struct Searcher<'a> {
     regex_cache: HashMap<String, Regex>,
     found: u32,
     raw_output_buffer: Vec<HashMap<String, String>>,
-    partitioned_output_buffer: HashMap<Vec<String>, Vec<HashMap<String, String>>>,
+    partitioned_output_buffer: Rc<HashMap<Vec<String>, Vec<HashMap<String, String>>>>,
     output_buffer: TopN<Criteria<String>, String>,
     gitignore_map: HashMap<PathBuf, Vec<GitignoreFilter>>,
     hgignore_filters: Vec<HgignoreFilter>,
@@ -108,7 +109,7 @@ impl <'a> Searcher<'a> {
             regex_cache: HashMap::new(),
             found: 0,
             raw_output_buffer: vec![],
-            partitioned_output_buffer: HashMap::new(),
+            partitioned_output_buffer: Rc::new(HashMap::new()),
             output_buffer: if limit == 0 { TopN::limitless() } else { TopN::new(limit) },
             gitignore_map: HashMap::new(),
             hgignore_filters: vec![],
@@ -185,7 +186,7 @@ impl <'a> Searcher<'a> {
 
         let mut roots = vec![];
 
-        for root in self.query.roots.clone() {
+        for root in &self.query.roots {
             if root.options.regexp {
                 let mut ext_roots: Vec<String> = vec![];
                 let parts = root.path.split('/').collect::<Vec<&str>>();
@@ -204,7 +205,7 @@ impl <'a> Searcher<'a> {
                             }
                         }
 
-                        for root in ext_roots.clone() {
+                        for root in &ext_roots {
                             let mut start_from_rx_dir = false;
 
                             let mut path = Path::new(&root);
@@ -255,7 +256,7 @@ impl <'a> Searcher<'a> {
 
                 ext_roots.iter().for_each(|ext_root| roots.push(Root::clone_with_path(ext_root.to_string(), root.clone())));
             } else {
-                roots.push(root);
+                roots.push(root.clone());
             }
         }
 
@@ -313,7 +314,7 @@ impl <'a> Searcher<'a> {
         if self.has_aggregate_column() {
             if !self.query.grouping_fields.is_empty() {
                 if self.partitioned_output_buffer.is_empty() {
-                    self.partitioned_output_buffer = self.partition_output_buffer();
+                    self.partitioned_output_buffer = Rc::new(self.partition_output_buffer());
                 }
 
                 let group_keys: Vec<String> = self.query.grouping_fields.iter().map(|f| f.to_string()).collect();
@@ -324,11 +325,11 @@ impl <'a> Searcher<'a> {
                     let mut items: Vec<(String, String)> = Vec::new();
 
                     let mut file_map = HashMap::new();
-                    for (i, k) in group_keys.clone().into_iter().enumerate() {
-                        file_map.insert(k, f.0.get(i).unwrap().clone());
+                    for (i, k) in group_keys.iter().enumerate() {
+                        file_map.insert(k.clone(), f.0.get(i).unwrap().clone());
                     }
 
-                    for column_expr in &self.query.fields.clone() {
+                    for column_expr in &self.query.fields {
                         let record = format!("{}", self.get_column_expr_value(None, &None, &mut file_map, Some(f.1), column_expr));
                         let field_name = column_expr.to_string().to_lowercase();
                         items.push((field_name, record));
@@ -342,7 +343,7 @@ impl <'a> Searcher<'a> {
                 let mut buf = WritableBuffer::new();
                 let mut items: Vec<(String, String)> = Vec::new();
 
-                for column_expr in &self.query.fields.clone() {
+                for column_expr in &self.query.fields {
                     let record = format!("{}", self.get_column_expr_value(None, &None, &mut HashMap::new(), None, column_expr));
                     let field_name = column_expr.to_string().to_lowercase();
                     items.push((field_name, record));
@@ -1446,7 +1447,7 @@ impl <'a> Searcher<'a> {
 
         let mut items: Vec<(String, String)> = Vec::new();
 
-        for field in self.query.fields.clone().iter() {
+        for field in self.query.fields.iter() {
             let record = self.get_column_expr_value(Some(entry), file_info, &mut file_map, None, &field);
 
             let value = match self.use_colors && field.contains_colorized() {
@@ -1465,7 +1466,7 @@ impl <'a> Searcher<'a> {
             }
         }
 
-        for (idx, field) in self.query.ordering_fields.clone().iter().enumerate() {
+        for (idx, field) in self.query.ordering_fields.iter().enumerate() {
             criteria[idx] = match file_map.get(&field.to_string()) {
                 Some(record) => record.clone(),
                 None => self.get_column_expr_value(Some(entry), file_info, &mut file_map, None, &field).to_string()
