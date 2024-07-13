@@ -47,7 +47,8 @@ enum LexingMode {
 
 pub struct Lexer {
     input: Vec<String>,
-    index: usize,
+    input_index: usize,
+    char_index: isize,
     before_from: bool,
     after_open: bool,
     after_where: bool,
@@ -58,7 +59,8 @@ impl Lexer {
     pub fn new(input: Vec<String>) -> Lexer {
         Lexer {
             input,
-            index: 0,
+            input_index: 0,
+            char_index: 0,
             before_from: true,
             after_open: false,
             after_where: false,
@@ -70,25 +72,45 @@ impl Lexer {
         let mut s = String::new();
         let mut mode = LexingMode::Undefined;
 
-        for c in self.input.join(" ").chars().skip(self.index) {
+        loop {
+            let input_part = self.input.get(self.input_index);
+            if input_part.is_none() {
+                break;
+            }
+            let input_part = input_part.unwrap();
+            
+            let c;
+            if self.char_index == -1 {
+                c = ' ';
+                self.char_index += 1;
+            } else {
+                let input_char = input_part.chars().nth(self.char_index as usize);
+                if input_char.is_none() {
+                    self.input_index += 1;
+                    self.char_index = -1;
+                    continue;
+                }
+                c = input_char.unwrap();
+            }
+            
             match mode {
                 LexingMode::Comma | LexingMode::Open | LexingMode::Close => break,
                 LexingMode::SingleQuotedString => {
-                    self.index += 1;
+                    self.char_index += 1;
                     if c == '\'' {
                         break;
                     }
                     s.push(c);
                 }
                 LexingMode::DoubleQuotedString => {
-                    self.index += 1;
+                    self.char_index += 1;
                     if c == '"' {
                         break;
                     }
                     s.push(c);
                 }
                 LexingMode::BackticksQuotedString => {
-                    self.index += 1;
+                    self.char_index += 1;
                     if c == '`' {
                         break;
                     }
@@ -99,7 +121,7 @@ impl Lexer {
                         break;
                     }
 
-                    self.index += 1;
+                    self.char_index += 1;
                     s.push(c);
                 }
                 LexingMode::ArithmeticOperator => {
@@ -118,11 +140,11 @@ impl Lexer {
                         }
                     }
 
-                    self.index += 1;
+                    self.char_index += 1;
                     s.push(c);
                 }
                 LexingMode::Undefined => {
-                    self.index += 1;
+                    self.char_index += 1;
                     match c {
                         ' ' => {}
                         '\'' => mode = LexingMode::SingleQuotedString,
@@ -273,9 +295,9 @@ fn looks_like_date(s: &str) -> bool {
 }
 
 macro_rules! lexer {
-    ($str:literal) => {
+    ($($str:literal),+) => {
         {
-            let quote = vec![$str.to_string()];
+            let quote = vec![$($str.to_string()),+];
             Lexer::new(quote)
         }
     }
@@ -982,6 +1004,30 @@ mod tests {
         );
 
         let mut lexer = lexer!("select modified, * from /test limit 10");
+
+        assert_eq!(
+            lexer.next_lexem(),
+            Some(Lexem::RawString(String::from("select")))
+        );
+        assert_eq!(
+            lexer.next_lexem(),
+            Some(Lexem::RawString(String::from("modified")))
+        );
+        assert_eq!(lexer.next_lexem(), Some(Lexem::Comma));
+        assert_eq!(
+            lexer.next_lexem(),
+            Some(Lexem::ArithmeticOperator(String::from("*")))
+        );
+        assert_eq!(lexer.next_lexem(), Some(Lexem::From));
+        assert_eq!(
+            lexer.next_lexem(),
+            Some(Lexem::RawString(String::from("/test")))
+        );
+    }
+
+    #[test]
+    fn lexer_with_multiple_input_parts() {
+        let mut lexer = lexer!("select", "modified,*", "from", "/test");
 
         assert_eq!(
             lexer.next_lexem(),
