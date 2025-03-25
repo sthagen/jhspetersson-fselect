@@ -234,13 +234,15 @@ impl<'a> Searcher<'a> {
 
     /// Searches directories based on configured query and outputs results to stdout.
     pub fn list_search_results(&mut self) -> io::Result<()> {
-        let current_dir = std::env::current_dir().unwrap();
+        let current_dir = std::env::current_dir()?;
 
         if let Err(e) = self.results_writer.write_header(&mut std::io::stdout()) {
             if e.kind() == ErrorKind::BrokenPipe {
                 return Ok(());
             }
         }
+
+        let start_time = std::time::Instant::now();
 
         let mut roots = vec![];
 
@@ -392,6 +394,8 @@ impl<'a> Searcher<'a> {
                 true,
             );
         }
+        
+        let compute_time = std::time::Instant::now();
 
         // ======== Compute results =========
         if self.has_aggregate_column() {
@@ -541,6 +545,14 @@ impl<'a> Searcher<'a> {
 
         self.results_writer.write_footer(&mut std::io::stdout())?;
 
+        let completion_time = std::time::Instant::now();
+        
+        if self.config.debug {
+            eprintln!("Search: {}ms\nCompute: {}ms", 
+                      compute_time.duration_since(start_time).as_millis(), 
+                      completion_time.duration_since(compute_time).as_millis());
+        }
+        
         Ok(())
     }
 
@@ -605,36 +617,42 @@ impl<'a> Searcher<'a> {
                     match entry {
                         Ok(entry) => {
                             let mut path = entry.path();
-                            let mut canonical_path = path.clone();
+                            let pass_ignores = if apply_gitignore || apply_hgignore || apply_dockerignore {
+                                let mut canonical_path = path.clone();
 
-                            if apply_gitignore || apply_hgignore || apply_dockerignore {
-                                if let Ok(canonicalized) = crate::util::canonical_path(&path) {
-                                    canonical_path = PathBuf::from(canonicalized);
+                                if apply_gitignore || apply_hgignore || apply_dockerignore {
+                                    if let Ok(canonicalized) = crate::util::canonical_path(&path) {
+                                        canonical_path = PathBuf::from(canonicalized);
+                                    }
                                 }
-                            }
 
-                            // Check the path against the filters
-                            #[cfg(feature = "git")]
-                            let pass_gitignore = !apply_gitignore
-                                || !(git_repository.is_some() && 
+                                // Check the path against the filters
+                                #[cfg(feature = "git")]
+                                let pass_gitignore = !apply_gitignore
+                                    || !(git_repository.is_some() &&
                                     git_repository.unwrap().is_path_ignored(&path)
                                         .unwrap_or(false));
-                            #[cfg(not(feature = "git"))]
-                            let pass_gitignore = true;
-                            
-                            let pass_hgignore = !apply_hgignore
-                                || !matches_hgignore_filter(
+                                #[cfg(not(feature = "git"))]
+                                let pass_gitignore = true;
+
+                                let pass_hgignore = !apply_hgignore
+                                    || !matches_hgignore_filter(
                                     &self.hgignore_filters,
                                     canonical_path.to_string_lossy().as_ref(),
                                 );
-                            let pass_dockerignore = !apply_dockerignore
-                                || !matches_dockerignore_filter(
+                                let pass_dockerignore = !apply_dockerignore
+                                    || !matches_dockerignore_filter(
                                     &self.dockerignore_filters,
                                     canonical_path.to_string_lossy().as_ref(),
                                 );
 
+                                pass_gitignore && pass_hgignore && pass_dockerignore
+                            } else {
+                                true
+                            };                            
+
                             // If the path passes the filters, process it
-                            if pass_gitignore && pass_hgignore && pass_dockerignore {
+                            if pass_ignores {
                                 if min_depth == 0 || depth >= min_depth {
                                     let checked = self.check_file(&entry, &None)?;
                                     if !checked {
