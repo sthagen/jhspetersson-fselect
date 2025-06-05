@@ -23,345 +23,453 @@ use crate::fileinfo::FileInfo;
 use crate::util::{capitalize, error_exit, format_date, parse_datetime};
 use crate::util::variant::{Variant, VariantType};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
-pub enum Function {
-    // ===== Regular functions =====
-    //  String conversion functions
-    /// Convert the value to lowercase
-    Lower,
-    /// Convert the value to UPPERCASE
-    Upper,
-    /// Capitalize the first letter of each word (Title Case)
-    InitCap,
-    /// Get the length of the string
-    Length,
-    /// Convert the value to base64
-    ToBase64,
-    /// Read the value as base64
-    FromBase64,
+macro_rules! functions {
+    (
+        #[group_order = [$($group_order:literal),*]$(,)?]
+        $(#[$enum_attrs:meta])*
+        $vis:vis enum $enum_name:ident {
+            $(
+                #[text = [$($text:literal),*]$(,)? $(data_type = $data_type:literal)?]
+                $(@is_aggregate = $is_aggregate:literal)?
+                $(@weight = $weight:literal)?
+                $(@group = $group:literal)?
+                $(@description = $description:literal)?
+                $(#[$variant_attrs:meta])*
+                $variant:ident
+            ),*
+            $(,)?
+        }
+        
+    ) => {
+        $(#[$enum_attrs])*
+        $vis enum $enum_name {
+            $(
+                $(#[$variant_attrs])*
+                $variant,
+            )*
+        }
 
-    //  String manipulation functions
-    /// Concatenate the value with the arguments
-    Concat,
-    /// Concatenate the arguments, separated by the value
-    ConcatWs,
-    /// Get the position of a substring in the value
-    Locate,
-    /// Get a substring of the value, from a position and length
-    Substring,
-    /// Replace a substring in the value with another string
-    Replace,
-    /// Trim whitespace from the value
-    Trim,
-    /// Trim whitespace from the start of the value
-    LTrim,
-    /// Trim whitespace from the end of the value
-    RTrim,
+        impl FromStr for $enum_name {
+            type Err = String;
 
-    //  Numeric functions
-    /// Get the binary representation of the value
-    Bin,
-    /// Get the hexadecimal representation of the value
-    Hex,
-    /// Get the octal representation of the value
-    Oct,
-    /// Get the absolute value of the number
-    Abs,
-    /// Raise the value to the power of another value
-    Power,
-    /// Get the square root of the value
-    Sqrt,
-    /// Get the logarithm of the value with a specific base
-    Log,
-    /// Get the natural logarithm of the value
-    Ln,
-    /// Get e raised to the power of the specified number
-    Exp,
-    /// Get the smallest value
-    Least,
-    /// Get the largest value
-    Greatest,
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let function = s.to_ascii_lowercase();
 
-    //  Japanese string functions
-    /// Check if the string contains Japanese characters
-    ContainsJapanese,
-    /// Check if the string contains Hiragana characters
-    ContainsHiragana,
-    /// Check if the string contains Katakana characters
-    ContainsKatakana,
-    /// Check if the string contains Kana characters
-    ContainsKana,
-    /// Check if the string contains Kanji characters
-    ContainsKanji,
+                match function.as_str() {
+                    $(
+                        $(#[$variant_attrs])*
+                        $($text)|* => Ok($enum_name::$variant),
+                    )*
+                    _ => {
+                        let err = String::from("Unknown function ") + &function;
+                        Err(err)
+                    }
+                }
+            }
+        }
+        
+        impl Display for $enum_name {
+            fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+                write!(f, "{:?}", self)
+            }
+        }
 
-    //  Formatting functions
-    /// Format a file size in human-readable format
-    FormatSize,
-    /// Format a time duration in human-readable format
-    FormatTime,
+        impl Serialize for $enum_name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.to_string())
+            }
+        }
+        
+        impl $enum_name {
+            pub fn is_numeric_function(&self) -> bool {
+                match self {
+                    $(
+                        $(#[$variant_attrs])*
+                        $enum_name::$variant => {
+                            stringify!($($data_type)?) .replace("\"", "") == "numeric"
+                        }
+                    )*
+                }
+            }
+            
+            pub fn is_boolean_function(&self) -> bool {
+                match self {
+                    $(
+                        $(#[$variant_attrs])*
+                        $enum_name::$variant => {
+                            stringify!($($data_type)?) .replace("\"", "") == "boolean"
+                        }
+                    )*
+                }
+            }
+            
+            pub fn is_aggregate_function(&self) -> bool {
+                match self {
+                    $(
+                        $(#[$variant_attrs])*
+                        $enum_name::$variant => {
+                            stringify!($($is_aggregate)?) == "true"
+                        }
+                    )*
+                }
+            }
+            
+            pub fn get_weight(&self) -> i32 {
+                match self {
+                    $(
+                        $(#[$variant_attrs])*
+                        $enum_name::$variant => {
+                            stringify!($($weight)?) .parse().unwrap_or(0)
+                        }
+                    )*
+                }
+            }
+            
+            pub fn get_groups() -> Vec<&'static str> {
+                vec![
+                    $($group_order),*
+                ]
+            }
 
-    //  Date and time functions
-    /// Get the current date
-    CurrentDate,
-    /// Get the day from a date
-    Day,
-    /// Get the month from a date
-    Month,
-    /// Get the year from a date
-    Year,
-    /// Get the day of the week from a date
-    DayOfWeek,
+            pub fn get_names_and_descriptions() -> HashMap<&'static str, Vec<(Vec<&'static str>, &'static str)>> {
+                let mut map = HashMap::new();
 
-    //  File functions
-    #[cfg(all(unix, feature = "users"))]
-    /// Get the current user ID
-    CurrentUid,
-    #[cfg(all(unix, feature = "users"))]
-    /// Get the current username
-    CurrentUser,
-    #[cfg(all(unix, feature = "users"))]
-    /// Get the current group ID
-    CurrentGid,
-    #[cfg(all(unix, feature = "users"))]
-    /// Get the current group name
-    CurrentGroup,
+                $(
+                    $(#[$variant_attrs])*
+                    {
+                        if !map.contains_key($($group)?) {
+                            map.insert($($group)?, vec![]);
+                        }
+                        let key = map.get_mut($($group)?).unwrap();
+                        key.push((vec![$($text),*], $($description)?));
+                    }
+                )*
 
-    /// Checks if a file contains a substring
-    Contains,
-
-    #[cfg(unix)]
-    /// Check if the file has a specific extended attribute
-    HasXattr,
-    #[cfg(unix)]
-    /// Get the value of an extended attribute
-    Xattr,
-    #[cfg(target_os = "linux")]
-    /// Check if the file has capabilities (security.capability xattr)
-    HasCapabilities,
-    #[cfg(target_os = "linux")]
-    /// Check if the file has a specific capability (security.capability xattr)
-    HasCapability,
-
-    //  Miscellaneous functions
-    /// Return the first non-empty value
-    Coalesce,
-    /// Gets a random number from 0 to the value, or between two values
-    Random,
-
-    // ===== Aggregate functions =====
-    /// Get the minimum value
-    Min,
-    /// Get the maximum value
-    Max,
-    /// Get the average value
-    Avg,
-    /// Get the sum of all values
-    Sum,
-    /// Get the number of values
-    Count,
-
-    /// Get the population standard deviation
-    StdDevPop,
-    /// Get the sample standard deviation
-    StdDevSamp,
-    /// Get the population variance
-    VarPop,
-    /// Get the sample variance
-    VarSamp,
-}
-
-impl FromStr for Function {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let function = s.to_ascii_lowercase();
-
-        match function.as_str() {
-            "lower" | "lowercase" | "lcase" => Ok(Function::Lower),
-            "upper" | "uppercase" | "ucase" => Ok(Function::Upper),
-            "length" | "len" => Ok(Function::Length),
-            "initcap" => Ok(Function::InitCap),
-            "to_base64" | "base64" => Ok(Function::ToBase64),
-            "from_base64" => Ok(Function::FromBase64),
-            "bin" => Ok(Function::Bin),
-            "hex" => Ok(Function::Hex),
-            "oct" => Ok(Function::Oct),
-            "abs" => Ok(Function::Abs),
-            "power" | "pow" => Ok(Function::Power),
-            "sqrt" => Ok(Function::Sqrt),
-            "log" => Ok(Function::Log),
-            "ln" => Ok(Function::Ln),
-            "exp" => Ok(Function::Exp),
-            "least" => Ok(Function::Least),
-            "greatest" => Ok(Function::Greatest),
-
-            "contains_japanese" | "japanese" => Ok(Function::ContainsJapanese),
-            "contains_hiragana" | "hiragana" => Ok(Function::ContainsHiragana),
-            "contains_katakana" | "katakana" => Ok(Function::ContainsKatakana),
-            "contains_kana" | "kana" => Ok(Function::ContainsKana),
-            "contains_kanji" | "kanji" => Ok(Function::ContainsKanji),
-
-            "concat" => Ok(Function::Concat),
-            "concat_ws" => Ok(Function::ConcatWs),
-            "locate" | "position" => Ok(Function::Locate),
-            "substr" | "substring" => Ok(Function::Substring),
-            "replace" => Ok(Function::Replace),
-            "trim" => Ok(Function::Trim),
-            "ltrim" => Ok(Function::LTrim),
-            "rtrim" => Ok(Function::RTrim),
-            "coalesce" => Ok(Function::Coalesce),
-            "format_size" | "format_filesize" => Ok(Function::FormatSize),
-            "format_time" | "pretty_time" => Ok(Function::FormatTime),
-
-            "current_date" | "cur_date" | "curdate" => Ok(Function::CurrentDate),
-            "day" => Ok(Function::Day),
-            "month" => Ok(Function::Month),
-            "year" => Ok(Function::Year),
-            "dayofweek" | "dow" => Ok(Function::DayOfWeek),
-
-            #[cfg(all(unix, feature = "users"))]
-            "current_uid" => Ok(Function::CurrentUid),
-            #[cfg(all(unix, feature = "users"))]
-            "current_user" => Ok(Function::CurrentUser),
-            #[cfg(all(unix, feature = "users"))]
-            "current_gid" => Ok(Function::CurrentGid),
-            #[cfg(all(unix, feature = "users"))]
-            "current_group" => Ok(Function::CurrentGroup),
-
-            "min" => Ok(Function::Min),
-            "max" => Ok(Function::Max),
-            "avg" => Ok(Function::Avg),
-            "sum" => Ok(Function::Sum),
-            "count" => Ok(Function::Count),
-
-            "stddev_pop" | "stddev" | "std" => Ok(Function::StdDevPop),
-            "stddev_samp" => Ok(Function::StdDevSamp),
-            "var_pop" | "variance" => Ok(Function::VarPop),
-            "var_samp" => Ok(Function::VarSamp),
-
-            "contains" => Ok(Function::Contains),
-
-            #[cfg(unix)]
-            "has_xattr" => Ok(Function::HasXattr),
-            #[cfg(unix)]
-            "xattr" => Ok(Function::Xattr),
-            #[cfg(target_os = "linux")]
-            "has_capabilities" | "has_caps" => Ok(Function::HasCapabilities),
-            #[cfg(target_os = "linux")]
-            "has_capability" | "has_cap" => Ok(Function::HasCapability),
-
-            "rand" | "random" => Ok(Function::Random),
-
-            _ => {
-                let err = String::from("Unknown function ") + &function;
-                Err(err)
+                map
             }
         }
     }
 }
 
-impl Display for Function {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl Serialize for Function {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Function {
-    /// Check if the function is an aggregate function
-    pub fn is_aggregate_function(&self) -> bool {
-        matches!(
-            self,
-            Function::Min
-                | Function::Max
-                | Function::Avg
-                | Function::Sum
-                | Function::Count
-                | Function::StdDevPop
-                | Function::StdDevSamp
-                | Function::VarPop
-                | Function::VarSamp
-        )
-    }
-
-    /// Check if the function is a numeric function, i.e. it returns a numeric value.
-    pub fn is_numeric_function(&self) -> bool {
-        if self.is_aggregate_function() {
-            return true;
-        }
-
-        matches!(
-            self,
-            Function::Length
-                | Function::Random
-                | Function::Day
-                | Function::Month
-                | Function::Year
-                | Function::Abs
-                | Function::Power
-                | Function::Sqrt
-                | Function::Log
-                | Function::Ln
-                | Function::Exp
-                | Function::Least
-                | Function::Greatest
-        )
-    }
-
-    /// Check if the function is a boolean function, i.e. it returns a boolean value.
-    pub fn is_boolean_function(&self) -> bool {
-        #[cfg(unix)]
-        if self == &Function::HasXattr {
-            return true;
-        }
-
-        #[cfg(target_os = "linux")]
-        if self == &Function::HasCapabilities || self == &Function::HasCapability {
-            return true;
-        }
-
-        matches!(
-            self,
-            Function::Contains
-                | Function::ContainsHiragana
-                | Function::ContainsKatakana
-                | Function::ContainsKana
-                | Function::ContainsKanji
-                | Function::ContainsJapanese
-        )
-    }
+functions! {
+    #[group_order = ["String", "Japanese string", "Numeric", "Datetime", "Aggregate", "Xattr", "Other"]]
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
+    pub enum Function {
+        #[text = ["lower", "lowercase", "lcase"]]
+        @group = "String"
+        @description = "Convert the value to lowercase"
+        Lower,
+        
+        #[text = ["upper", "uppercase", "ucase"]]
+        @group = "String"
+        @description = "Convert the value to UPPERCASE"
+        Upper,
+        
+        #[text = ["initcap"]]
+        @group = "String"
+        @description = "Capitalize the first letter of each word (Title Case)"
+        InitCap,
+        
+        #[text = ["length", "len"], data_type = "numeric"]
+        @group = "String"
+        @description = "Get the length of the string"
+        Length,
+        
+        #[text = ["to_base64", "base64"]]
+        @group = "String"
+        @description = "Convert the value to base64"
+        ToBase64,
+        
+        #[text = ["from_base64"]]
+        @group = "String"
+        @description = "Read the value as base64"
+        FromBase64,
     
-    pub fn get_weight(&self) -> i32 {
-        match self {
-            Function::CurrentDate
-            | Function::Random => 1,
-            
-            #[cfg(all(unix, feature = "users"))]
-            Function::CurrentUid
-            | Function::CurrentUser
-            | Function::CurrentGid
-            | Function::CurrentGroup => 1,
-
-            #[cfg(unix)]
-            Function::HasXattr
-            | Function::Xattr => 2,
-
-            #[cfg(target_os = "linux")]
-            Function::HasCapabilities
-            | Function::HasCapability => 2,
-
-            Function::Contains => 1024,
-            
-            _ => 0,
-        }
+        #[text = ["concat"]]
+        @group = "String"
+        @description = "Concatenate the value with the arguments"
+        Concat,
+        
+        #[text = ["concat_ws"]]
+        @group = "String"
+        @description = "Concatenate the arguments, separated by the value"
+        ConcatWs,
+        
+        #[text = ["locate", "position"], data_type = "numeric"]
+        @group = "String"
+        @description = "Get the position of a substring in the value"
+        Locate,
+        
+        #[text = ["substr", "substring"]]
+        @group = "String"
+        @description = "Get a substring of the value, from a position and length"
+        Substring,
+        
+        #[text = ["replace"]]
+        @group = "String"
+        @description = "Replace a substring in the value with another string"
+        Replace,
+        
+        #[text = ["trim"]]
+        @group = "String"
+        @description = "Trim whitespace from the value"
+        Trim,
+        
+        #[text = ["ltrim"]]
+        @group = "String"
+        @description = "Trim whitespace from the start of the value"
+        LTrim,
+        
+        #[text = ["rtrim"]]
+        @group = "String"
+        @description = "Trim whitespace from the end of the value"
+        RTrim,
+    
+        #[text = ["bin"]]
+        @group = "Numeric"
+        @description = "Get the binary representation of the value"
+        Bin,
+        
+        #[text = ["hex"]]
+        @group = "Numeric"
+        @description = "Get the hexadecimal representation of the value"
+        Hex,
+        
+        #[text = ["oct"]]
+        @group = "Numeric"
+        @description = "Get the octal representation of the value"
+        Oct,
+        
+        #[text = ["abs"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the absolute value of the number"
+        Abs,
+        
+        #[text = ["power", "pow"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Raise the value to the power of another value"
+        Power,
+        
+        #[text = ["sqrt"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the square root of the value"
+        Sqrt,
+        
+        #[text = ["log"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the logarithm of the value with a specific base"
+        Log,
+        
+        #[text = ["ln"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the natural logarithm of the value"
+        Ln,
+        
+        #[text = ["exp"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get e raised to the power of the specified number"
+        Exp,
+        
+        #[text = ["least"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the smallest value"
+        Least,
+        
+        #[text = ["greatest"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the largest value"
+        Greatest,
+    
+        #[text = ["contains_japanese", "japanese"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Japanese characters"
+        ContainsJapanese,
+        
+        #[text = ["contains_hiragana", "hiragana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Hiragana characters"
+        ContainsHiragana,
+        
+        #[text = ["contains_katakana", "katakana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Katakana characters"
+        ContainsKatakana,
+        
+        #[text = ["contains_kana", "kana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Kana characters"
+        ContainsKana,
+        
+        #[text = ["contains_kanji", "kanji"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Kanji characters"
+        ContainsKanji,
+    
+        #[text = ["format_size", "format_filesize"]]
+        @group = "Other"
+        @description = "Format a file size in human-readable format"
+        FormatSize,
+        
+        #[text = ["format_time", "pretty_time"]]
+        @group = "Other"
+        @description = "Format a time duration in human-readable format"
+        FormatTime,
+    
+        #[text = ["current_date", "cur_date", "curdate"]]
+        @weight = 1
+        @group = "Datetime"
+        @description = "Get the current date"
+        CurrentDate,
+        
+        #[text = ["day"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the day from a date"
+        Day,
+        
+        #[text = ["month"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the month from a date"
+        Month,
+        
+        #[text = ["year"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the year from a date"
+        Year,
+        
+        #[text = ["dayofweek", "dow"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the day of the week from a date"
+        DayOfWeek,
+    
+        #[text = ["current_uid"], data_type = "numeric"]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current user ID"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentUid,
+        
+        #[text = ["current_user"]]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current username"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentUser,
+        
+        #[text = ["current_gid"], data_type = "numeric"]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current group ID"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentGid,
+        
+        #[text = ["current_group"]]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current group name"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentGroup,
+    
+        #[text = ["contains"], data_type = "boolean"]
+        @weight = 1024
+        @group = "Other"
+        @description = "Checks if a file contains a substring"
+        Contains,
+    
+        #[text = ["has_xattr"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has a specific extended attribute"
+        #[cfg(unix)]
+        HasXattr,
+        
+        #[text = ["xattr"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get the value of an extended attribute"
+        #[cfg(unix)]
+        Xattr,
+        
+        #[text = ["has_capabilities", "has_caps"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has capabilities (security.capability xattr)"
+        #[cfg(target_os = "linux")]
+        HasCapabilities,
+        
+        #[text = ["has_capability", "has_cap"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has a specific capability (security.capability xattr)"
+        #[cfg(target_os = "linux")]
+        HasCapability,
+    
+        #[text = ["coalesce"]]
+        @group = "Other"
+        @description = "Return the first non-empty value"
+        Coalesce,
+        
+        #[text = ["rand", "random"], data_type = "numeric"]
+        @weight = 1
+        @group = "Numeric"
+        @description = "Gets a random number from 0 to the value, or between two values"
+        Random,
+    
+        #[text = ["min"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the minimum value"
+        Min,
+        
+        #[text = ["max"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the maximum value"
+        Max,
+        
+        #[text = ["avg"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the average value"
+        Avg,
+        
+        #[text = ["sum"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sum of all values"
+        Sum,
+        
+        #[text = ["count"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the number of values"
+        Count,
+    
+        #[text = ["stddev_pop", "stddev", "std"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the population standard deviation"
+        StdDevPop,
+        
+        #[text = ["stddev_samp"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sample standard deviation"
+        StdDevSamp,
+        
+        #[text = ["var_pop", "variance"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the population variance"
+        VarPop,
+        
+        #[text = ["var_samp"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sample variance"
+        VarSamp,
     }
 }
 
@@ -629,8 +737,7 @@ pub fn get_value(
             Ok(date) => Variant::from_int(date.0.weekday().number_from_sunday() as i64),
             _ => Variant::empty(VariantType::Int),
         },
-
-        // ===== File functions =====
+        
         #[cfg(all(unix, feature = "users"))]
         Some(Function::CurrentUid) => Variant::from_int(uzers::get_current_uid() as i64),
         #[cfg(all(unix, feature = "users"))]
@@ -649,6 +756,7 @@ pub fn get_value(
                 None => Variant::empty(VariantType::String),
             }
         }
+        // ===== File functions =====
         Some(Function::Contains) => {
             if file_info.is_some() {
                 return Variant::empty(VariantType::Bool);
