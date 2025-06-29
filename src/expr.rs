@@ -8,6 +8,7 @@ use crate::function::Function;
 use crate::operators::ArithmeticOp;
 use crate::operators::LogicalOp;
 use crate::operators::Op;
+use crate::query::Query;
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Hash, Serialize)]
 pub struct Expr {
@@ -21,6 +22,7 @@ pub struct Expr {
     pub function: Option<Function>,
     pub args: Option<Vec<Expr>>,
     pub val: Option<String>,
+    pub subquery: Option<Box<Query>>,
     pub weight: i32,
 }
 
@@ -37,6 +39,7 @@ impl Expr {
             function: None,
             args: None,
             val: None,
+            subquery: None,
             weight: 0,
         }
     }
@@ -56,6 +59,7 @@ impl Expr {
             function: None,
             args: None,
             val: None,
+            subquery: None,
             weight: left_weight + right_weight,
         }
     }
@@ -75,6 +79,7 @@ impl Expr {
             function: None,
             args: None,
             val: None,
+            subquery: None,
             weight: left_weight + right_weight,
         }
     }
@@ -94,6 +99,7 @@ impl Expr {
             function: None,
             args: None,
             val: None,
+            subquery: None,
             weight: left_weight + right_weight,
         }
     }
@@ -112,6 +118,7 @@ impl Expr {
             function: None,
             args: None,
             val: None,
+            subquery: None,
             weight,
         }
     }
@@ -130,6 +137,7 @@ impl Expr {
             function: Some(function),
             args: Some(vec![]),
             val: None,
+            subquery: None,
             weight,
         }
     }
@@ -152,6 +160,7 @@ impl Expr {
             function: Some(function),
             args: Some(vec![]),
             val: None,
+            subquery: None,
             weight: weight + left_weight,
         }
     }
@@ -168,7 +177,30 @@ impl Expr {
             function: None,
             args: None,
             val: Some(value),
+            subquery: None,
             weight: 0,
+        }
+    }
+    
+    pub fn subquery(subquery: Query) -> Expr {
+        let weight = match subquery.expr {
+            Some(ref expr) => expr.weight,
+            None => 0,
+        };
+        
+        Expr {
+            left: None,
+            arithmetic_op: None,
+            logical_op: None,
+            op: None,
+            right: None,
+            minus: false,
+            field: None,
+            function: None,
+            args: None,
+            val: None,
+            subquery: Some(Box::new(subquery)),
+            weight,
         }
     }
     
