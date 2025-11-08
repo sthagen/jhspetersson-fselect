@@ -1,5 +1,6 @@
 //! Handles directory traversal and file processing.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 #[cfg(unix)]
@@ -164,6 +165,10 @@ pub struct Searcher<'a> {
     raw_output_buffer: Vec<HashMap<String, String>>,
     partitioned_output_buffer: Rc<HashMap<Vec<String>, Vec<HashMap<String, String>>>>,
     output_buffer: TopN<Criteria<String>, String>,
+
+    record_context: Rc<RefCell<HashMap<String, HashMap<String, String>>>>,
+    current_alias: Option<String>,
+
     hgignore_filters: Vec<HgignoreFilter>,
     dockerignore_filters: Vec<DockerignoreFilter>,
     visited_dirs: HashSet<PathBuf>,
@@ -183,6 +188,17 @@ pub struct Searcher<'a> {
 impl<'a> Searcher<'a> {
     pub fn new(
         query: &'a Query,
+        config: &'a Config,
+        default_config: &'a Config,
+        use_colors: bool,
+    ) -> Self {
+        let record_context = Rc::new(RefCell::new(HashMap::new()));
+        Self::new_with_context(query, record_context, config, default_config, use_colors)
+    }
+
+    pub fn new_with_context(
+        query: &'a Query,
+        record_context: Rc<RefCell<HashMap<String, HashMap<String, String>>>>,
         config: &'a Config,
         default_config: &'a Config,
         use_colors: bool,
@@ -207,6 +223,10 @@ impl<'a> Searcher<'a> {
             } else {
                 TopN::new(limit)
             },
+
+            record_context,
+            current_alias: None,
+
             hgignore_filters: vec![],
             dockerignore_filters: vec![],
             visited_dirs: HashSet::new(),
@@ -344,6 +364,7 @@ impl<'a> Searcher<'a> {
         // ======== Explore each root =========
         for root in roots {
             self.current_follow_symlinks = root.options.symlinks;
+            self.current_alias = root.options.alias.clone();
 
             let root_dir = Path::new(&root.path);
             let min_depth = root.options.min_depth;
@@ -580,11 +601,21 @@ impl<'a> Searcher<'a> {
 
     fn get_list_from_subquery(&mut self, query: Query) -> Vec<String> {
         let query_str = format!("{:?}", query);
-        if let Some(cached) = self.subquery_cache.get(&query_str) {
-            return cached.clone();
-        }
+        
+        let ok_to_cache = query.roots.iter().all(|root| root.options.alias.is_none()); 
+        if ok_to_cache {
+            if let Some(cached) = self.subquery_cache.get(&query_str) {
+                return cached.clone();
+            }
+        }        
 
-        let mut sub_searcher = Searcher::new(&query, self.config, self.default_config, self.use_colors);
+        let mut sub_searcher = Searcher::new_with_context(
+            &query,
+            self.record_context.clone(),
+            self.config,
+            self.default_config,
+            self.use_colors
+        );
         sub_searcher.silent_mode = true;
         sub_searcher.list_search_results().unwrap_or_default();
 
@@ -592,7 +623,9 @@ impl<'a> Searcher<'a> {
             .map(|s| s.trim_end().to_string())
             .collect::<Vec<String>>();
 
-        self.subquery_cache.insert(query_str, result_values.clone());
+        if ok_to_cache {
+            self.subquery_cache.insert(query_str, result_values.clone());
+        }
 
         result_values
     }
@@ -884,7 +917,41 @@ impl<'a> Searcher<'a> {
     ) -> Variant {
         let column_expr_str = column_expr.to_string();
 
+        let mut should_update_context = false;
+
+        if column_expr_str.contains(".") {
+            let parts: Vec<&str> = column_expr_str.split('.').collect();
+            if parts.len() == 2 {
+                let column_expr_context_name = parts[0];
+                if let Some(ref current_alias) = self.current_alias {
+                    if column_expr_context_name != current_alias {
+                        let context = self.record_context.borrow();
+                        if let Some(ctx) = context.get(column_expr_context_name) {
+                            if let Some(val) = ctx.get(parts[1]) {
+                                return Variant::from_string(val);
+                            } else {
+                                //TODO: this should be propagated up to the higher context
+                                return Variant::empty(VariantType::String)
+                            }
+                        } else {
+                            //this is a syntax error actually
+                            error_exit("Invalid root alias", column_expr_context_name);
+                        }
+                    } else {
+                        should_update_context = true;
+                    }
+                }
+            }
+        }
+
         if file_map.contains_key(&column_expr_str) {
+            if should_update_context {
+                let mut context = self.record_context.borrow_mut();
+                let context_key = self.current_alias.clone().unwrap_or_else(|| String::from(""));
+                let context_entry = context.entry(context_key).or_insert(HashMap::new());
+                let entry_key = column_expr_str.split('.').nth(1).unwrap().to_string();
+                context_entry.insert(entry_key, file_map[&column_expr_str].clone());
+            }
             return Variant::from_string(&file_map[&column_expr_str]);
         }
 
@@ -899,6 +966,10 @@ impl<'a> Searcher<'a> {
             if entry.is_some() {
                 let result = self.get_field_value(entry.unwrap(), file_info, root_path, field);
                 file_map.insert(column_expr_str, result.to_string());
+                let mut context = self.record_context.borrow_mut();
+                let context_key = self.current_alias.clone().unwrap_or_else(|| String::from(""));
+                let context_entry = context.entry(context_key.to_string()).or_insert(HashMap::new());
+                context_entry.insert(field.to_string(), result.to_string());
                 return result;
             } else if let Some(val) = file_map.get(&field.to_string()) {
                 return Variant::from_string(val);
@@ -1915,8 +1986,46 @@ impl<'a> Searcher<'a> {
         return Variant::empty(VariantType::String);
     }
 
+    fn get_required_field_values(&mut self, expr: &Expr, current_alias: &str, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>) -> HashMap<Field, Variant> {
+        let mut field_values = HashMap::new();
+
+        let required_fields = expr.get_fields_required_in_subqueries(current_alias);
+        if !required_fields.is_empty() {
+            for field in required_fields {
+                let field_value = self.get_field_value(entry, file_info, root_path, &field);
+                field_values.insert(field, field_value);
+            }
+        }
+        
+        field_values
+    }
+    
     fn check_file(&mut self, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>) -> io::Result<bool> {
         self.fms.clear();
+
+        let mut file_map = HashMap::new();
+        
+        if let Some(ref current_alias) = self.current_alias.clone() {
+            {
+                let mut context = self.record_context.borrow_mut();
+                if let Some(ctx) = context.get_mut(current_alias) {
+                    ctx.clear();
+                }
+            }
+            
+            // prepopulate field cache with values used in subqueries
+            let has_where = self.query.expr.is_some();
+            if has_where {
+                let where_expr = self.query.clone().expr.unwrap().clone();
+                let field_values = self.get_required_field_values(&where_expr, current_alias, entry, root_path, &file_info);
+
+                let mut context = self.record_context.borrow_mut();
+                let context_entry = context.entry(current_alias.to_string()).or_insert(HashMap::new());
+                for (field, field_value) in field_values {
+                    context_entry.insert(field.to_string(), field_value.to_string());
+                }
+            }
+        }
 
         if let Some(ref expr) = self.query.expr {
             let result = self.conforms(entry, file_info, root_path, expr);
@@ -1927,11 +2036,10 @@ impl<'a> Searcher<'a> {
 
         self.found += 1;
 
-        let mut file_map = HashMap::new();
-
         let mut buf = WritableBuffer::new();
         let mut criteria = vec!["".to_string(); self.query.ordering_fields.len()];
 
+        //TODO: do we really need this?
         for field in self.query.get_all_fields() {
             file_map.insert(
                 field.to_string(),
@@ -2271,6 +2379,32 @@ impl<'a> Searcher<'a> {
                             }
                             result
                         }
+                        Op::Exists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => !args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        !self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                        Op::NotExists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        true
+                                    }
+                                }
+                            }
+                        }
                         _ => false,
                     }
                 }
@@ -2334,6 +2468,32 @@ impl<'a> Searcher<'a> {
                             }
                             result
                         }
+                        Op::Exists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => !args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        !self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                        Op::NotExists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        true
+                                    }
+                                }
+                            }
+                        }
                         _ => false,
                     }
                 }
@@ -2383,6 +2543,32 @@ impl<'a> Searcher<'a> {
                             }
                             result
                         }
+                        Op::Exists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => !args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        !self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                        Op::NotExists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        true
+                                    }
+                                }
+                            }
+                        }
                         _ => false,
                     }
                 }
@@ -2430,6 +2616,32 @@ impl<'a> Searcher<'a> {
                                 }
                             }
                             result
+                        }
+                        Op::Exists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => !args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        !self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                        Op::NotExists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        true
+                                    }
+                                }
+                            }
                         }
                         _ => false,
                     }
@@ -2483,6 +2695,32 @@ impl<'a> Searcher<'a> {
                                 }
                             }
                             result
+                        }
+                        Op::Exists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => !args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        !self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        false
+                                    }
+                                }
+                            }
+                        }
+                        Op::NotExists => {
+                            let right = expr.clone().right.unwrap();
+                            match right.args {
+                                Some(args) => args.is_empty(),
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).is_empty()
+                                    } else {
+                                        true
+                                    }
+                                }
+                            }
                         }
                         _ => false,
                     }
