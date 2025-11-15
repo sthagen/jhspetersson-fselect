@@ -231,7 +231,6 @@ impl <'a> Parser<'a> {
 
                                 mode = RootParsingMode::Comma;
                             } else {
-                                self.drop_lexeme();
                                 break;
                             }
                         }
@@ -901,6 +900,7 @@ impl <'a> Parser<'a> {
         if let Ok(Some(function_arg)) = self.parse_expr() {
             function_expr.add_left(function_arg);
         } else {
+            self.next_lexeme();
             return Ok(function_expr);
         }
 
@@ -1127,6 +1127,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1145,6 +1146,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1239,6 +1241,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(query.fields, vec![Expr::field(Field::Name)]);
 
@@ -1265,6 +1268,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(query.fields, vec![Expr::field(Field::Name)]);
 
@@ -1291,6 +1295,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let left = Expr::op(
             Expr::field(Field::Name),
@@ -1314,6 +1319,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let left = Expr::op(
             Expr::field(Field::Name),
@@ -1336,6 +1342,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = Expr::op(
             Expr::field(Field::Name),
@@ -1352,6 +1359,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = Expr::op(
             Expr::field(Field::Name),
@@ -1379,6 +1387,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.roots,
@@ -1395,11 +1404,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name from /home/user where is_audio = true or is_video = true";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1410,11 +1421,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name from /home/user where CONTAINS('foobar') = true or CONTAINS('bazz') = true";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1426,11 +1439,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name, caps from /home/user where HAS_CAPS";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1441,11 +1456,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select CURDATE";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1456,6 +1473,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(query.fields, vec![Expr::field(Field::Name)]);
 
@@ -1482,6 +1500,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.roots,
@@ -1495,6 +1514,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.roots,
@@ -1511,11 +1531,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name, {1 + 2} from /home/user limit 1";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1526,6 +1548,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1555,11 +1578,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name, size from /test where size gte 5mb and size lte 6mb";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1570,6 +1595,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.roots,
@@ -1586,11 +1612,13 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let query2 = "select name from /test where name like 'foobar' or CONTAINS('foobar')";
         let mut lexer2 = Lexer::new(vec![query2.to_string()]);
         let mut p2 = Parser::new(&mut lexer2);
         let query2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.expr, query2.expr);
     }
@@ -1601,6 +1629,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![
@@ -1620,6 +1649,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![
@@ -1642,6 +1672,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![
@@ -1664,6 +1695,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![
@@ -1686,6 +1718,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1709,6 +1742,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1765,6 +1799,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1786,6 +1821,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1809,6 +1845,7 @@ mod tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         assert_eq!(
             query.fields,
@@ -1819,6 +1856,8 @@ mod tests {
             query.roots,
             vec![Root::new(String::from("."), RootOptions::new())]
         );
+
+        assert!(query.expr.is_some());
     }
 
     #[test]
@@ -1843,6 +1882,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![Expr::value(String::from("user.test"))]);
@@ -1857,6 +1897,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let mut list_expr = Expr::new();
         list_expr.set_args(vec![Expr::value(String::from("user.test"))]);
@@ -1889,6 +1930,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = query.expr.expect("query.expr should be present");
         assert_eq!(expr.op, Some(Op::Exists));
@@ -1905,6 +1947,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = query.expr.expect("query.expr should be present");
         assert_eq!(expr.op, Some(Op::NotExists));
@@ -1921,6 +1964,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = query.expr.expect("expr should be present");
         assert_eq!(expr.op, Some(Op::Exists));
@@ -1937,6 +1981,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         let expr = query.expr.expect("expr should be present");
         assert_eq!(expr.op, Some(Op::NotExists));
@@ -1953,6 +1998,7 @@ mod exists_tests {
         let mut lexer = Lexer::new(vec![query.to_string()]);
         let mut p = Parser::new(&mut lexer);
         let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
 
         fn contains_field_with_alias(expr: &Expr, field: Field, alias: &str) -> bool {
             let mut found = false;

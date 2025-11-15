@@ -9,8 +9,8 @@ Find files with SQL-like queries
 While it doesn't tend to fully replace traditional `find` and `ls`, **fselect** has these nice features:
 
 * SQL-like (not real SQL, but highly relaxed!) grammar easily understandable by humans
-* complex queries, limited subqueries support
-* aggregate, statistics, date, and other functions
+* complex queries, compare results in several directories with [subqueries](docs/usage.md#subqueries-for-in-and-exists)
+* aggregate, statistics, date, and other [functions](docs/usage.md#functions)
 * search within archives
 * `.gitignore`, `.hgignore`, and `.dockerignore` support (experimental)
 * search by width and height of images, EXIF metadata
@@ -19,7 +19,7 @@ While it doesn't tend to fully replace traditional `find` and `ls`, **fselect** 
 * search by file hashes
 * search by MIME type
 * shortcuts to common file types
-* interactive mode
+* [interactive mode](docs/usage.md#interactive-mode)
 * various output formatting (CSV, JSON, and others)
 
 More is under way!
@@ -43,11 +43,11 @@ More is under way!
 
 #### Other Linux
 
-[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.9.0/fselect-x86_64-linux-musl.gz).
+[Static build with musl](https://github.com/jhspetersson/fselect/releases/download/0.9.1/fselect-x86_64-linux-musl.gz).
 
 #### Windows 64bit
 
-A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.9.0/fselect-x86_64-win.zip) is available at GitHub downloads.
+A statically precompiled [binary](https://github.com/jhspetersson/fselect/releases/download/0.9.1/fselect-x86_64-win.zip) is available at GitHub downloads.
 
 #### Windows via winget
 
@@ -127,8 +127,8 @@ More complex query:
 
 You can use subqueries:
 
-    select name from /test1 where size > 100 and size in (select size from /test2 where name in (select name from /test3 where modified in (select modified from /test4 where size < 200)))
-    select name, path, size from /data as data where exists (select * from /backup as backup where backup.name = data.name)
+    fselect "name from /test1 where size > 100 and size in (select size from /test2 where name in (select name from /test3 where modified in (select modified from /test4 where size < 200)))"
+    fselect "name, path, size from /data as data where exists (select * from /backup as backup where backup.name = data.name)"
     
 Aggregate functions (you can use curly braces if you want and even combine them with the regular parentheses):
 

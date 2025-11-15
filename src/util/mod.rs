@@ -33,6 +33,7 @@ use sha1::Digest;
 
 pub use self::datetime::format_date;
 pub use self::datetime::format_datetime;
+pub use self::datetime::format_time;
 pub use self::datetime::parse_datetime;
 pub use self::datetime::to_local_datetime;
 pub use self::glob::convert_glob_to_pattern;
@@ -174,12 +175,11 @@ pub fn path_error_message(p: &Path, e: io::Error) {
 }
 
 pub fn error_message(source: &str, description: &str) {
-    eprint!("{}: {}", source, description);
+    eprintln!("{}: {}", source, description);
 }
 
 pub fn error_exit(source: &str, description: &str) -> ! {
     error_message(source, description);
-    eprintln!();
     std::process::exit(2);
 }
 
