@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[derive(Debug)]
 pub struct TopN<K: Ord, V> {
     limit: Option<u32>,
     count: u32,
@@ -60,6 +61,10 @@ impl<K: Ord, V> TopN<K, V> {
             .values()
             .flat_map(|v| v.iter().cloned())
             .collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.echelons.clear();
     }
 }
 

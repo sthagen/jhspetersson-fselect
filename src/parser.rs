@@ -76,6 +76,7 @@ impl <'a> Parser<'a> {
             limit = 1;
         }
 
+        let raw_query = self.lexer.get_input_string();
         Ok(Query {
             fields,
             roots,
@@ -85,6 +86,7 @@ impl <'a> Parser<'a> {
             ordering_asc,
             limit,
             output_format,
+            raw_query,
         })
     }
 
@@ -473,7 +475,7 @@ impl <'a> Parser<'a> {
                 _ => {
                     self.drop_lexeme();
 
-                    return match right {
+                    let mut result = match right {
                         Some(right) => {
                             match left.as_ref().unwrap().weight <= right.weight {
                                 true => Ok(Some(Expr::logical_op(
@@ -490,6 +492,28 @@ impl <'a> Parser<'a> {
                         }
                         None => Ok(left),
                     };
+
+                    if let Ok(Some(ref mut result)) = result {
+                        if let Some(Lexeme::RawString(ref s)) = self.next_lexeme() {
+                            if s.to_lowercase() == "as" {
+                                match self.next_lexeme() {
+                                    Some(Lexeme::String(s)) | Some(Lexeme::RawString(s)) => {
+                                        result.alias = Some(s);
+                                    },
+                                    _ => {
+                                        self.drop_lexeme();
+                                        self.drop_lexeme();
+                                    }
+                                }
+                            } else {
+                                self.drop_lexeme();
+                            }
+                        } else {
+                            self.drop_lexeme();
+                        }
+                    }
+
+                    return result;
                 }
             }
         }

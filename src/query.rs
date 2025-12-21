@@ -27,6 +27,7 @@ pub struct Query {
     pub limit: u32,
     /// Output format
     pub output_format: OutputFormat,
+    pub raw_query: String,
 }
 
 impl Query {
@@ -216,6 +217,7 @@ macro_rules! output_format {
                 @text = $text:literal
                 @description = $description:literal
                 $(#[$variant_attrs:meta])*
+                $(@supports_colorization = $colorized:literal)?
                 $variant:ident$(,)?
             )*
         }
@@ -246,6 +248,17 @@ macro_rules! output_format {
                     )*
                 ]
             }
+            
+            pub fn supports_colorization(&self) -> bool {
+                match self {
+                    $(
+                        $(#[$variant_attrs])*
+                        $enum_name::$variant => {
+                            stringify!($supports_colorization) == "true"
+                        }
+                    )*
+                }
+            }
         }
     };
 }
@@ -255,10 +268,12 @@ output_format! {
     pub enum OutputFormat {
         @text = "tabs"
         @description = "Tab-separated values (default)"
+        @supports_colorization = true
         Tabs,
         
         @text = "lines"
         @description = "One item per line"
+        @supports_colorization = true
         Lines,
         
         @text = "list"

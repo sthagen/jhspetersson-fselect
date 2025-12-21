@@ -165,6 +165,7 @@ pub struct Searcher<'a> {
     raw_output_buffer: Vec<HashMap<String, String>>,
     partitioned_output_buffer: Rc<HashMap<Vec<String>, Vec<HashMap<String, String>>>>,
     output_buffer: TopN<Criteria<String>, String>,
+    aux_buffer: Vec<String>,
 
     record_context: Rc<RefCell<HashMap<String, HashMap<String, String>>>>,
     current_alias: Option<String>,
@@ -186,7 +187,7 @@ pub struct Searcher<'a> {
 }
 
 static FIELD_WITH_ALIAS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("^([a-zA-Z_]+)\\.([a-zA-Z_]+)$").unwrap()
+    Regex::new("^([a-zA-Z0-9_]+)\\.([a-zA-Z0-9_]+)$").unwrap()
 });
 
 impl<'a> Searcher<'a> {
@@ -227,6 +228,7 @@ impl<'a> Searcher<'a> {
             } else {
                 TopN::new(limit)
             },
+            aux_buffer: vec![],
 
             record_context,
             current_alias: None,
@@ -265,7 +267,9 @@ impl<'a> Searcher<'a> {
         let current_dir = std::env::current_dir()?;
 
         if !self.silent_mode {
-            if let Err(e) = self.results_writer.write_header(&mut std::io::stdout()) {
+            let raw_query = self.query.raw_query.clone();
+            let col_count = self.query.fields.len();
+            if let Err(e) = self.results_writer.write_header(raw_query, col_count, &mut std::io::stdout()) {
                 if e.kind() == ErrorKind::BrokenPipe {
                     return Ok(());
                 }
@@ -540,6 +544,7 @@ impl<'a> Searcher<'a> {
             } else {
                 let mut buf = WritableBuffer::new();
                 let mut items: Vec<(String, String)> = Vec::new();
+                let mut item_list = vec![];
 
                 for column_expr in &self.query.fields {
                     let record = format!(
@@ -554,8 +559,12 @@ impl<'a> Searcher<'a> {
                         )
                     );
                     let field_name = column_expr.to_string().to_lowercase();
-                    items.push((field_name, record));
+                    items.push((field_name, record.clone()));
+                    item_list.push(record.clone());
                 }
+
+                self.output_buffer.clear();
+                self.aux_buffer.extend(item_list);
 
                 if !self.silent_mode {
                     self.results_writer.write_row(&mut buf, items)?;
@@ -606,12 +615,12 @@ impl<'a> Searcher<'a> {
     fn get_list_from_subquery(&mut self, query: Query) -> Vec<String> {
         let query_str = format!("{:?}", query);
         
-        let ok_to_cache = query.roots.iter().all(|root| root.options.alias.is_none()); 
+        let ok_to_cache = query.roots.iter().all(|root| root.options.alias.is_none());
         if ok_to_cache {
             if let Some(cached) = self.subquery_cache.get(&query_str) {
                 return cached.clone();
             }
-        }        
+        }
 
         let mut sub_searcher = Searcher::new_with_context(
             &query,
@@ -620,12 +629,15 @@ impl<'a> Searcher<'a> {
             self.default_config,
             self.use_colors
         );
-        sub_searcher.silent_mode = true;
-        sub_searcher.list_search_results().unwrap_or_default();
+        sub_searcher.silent_mode = !self.config.debug;
+        sub_searcher.list_search_results().unwrap();
 
-        let result_values = sub_searcher.output_buffer.values().iter()
+        let mut result_values = sub_searcher.output_buffer.values().iter()
             .map(|s| s.trim_end().to_string())
             .collect::<Vec<String>>();
+        if result_values.is_empty() {
+            result_values = sub_searcher.aux_buffer;
+        }
 
         if ok_to_cache {
             self.subquery_cache.insert(query_str, result_values.clone());
@@ -980,7 +992,8 @@ impl<'a> Searcher<'a> {
                 let mut context = self.record_context.borrow_mut();
                 let context_key = self.current_alias.clone().unwrap_or_else(|| String::from(""));
                 let context_entry = context.entry(context_key.to_string()).or_insert(HashMap::new());
-                context_entry.insert(field.to_string(), result.to_string());
+                let entry_key = if let Some(alias) = column_expr.alias.clone() { alias } else { field.to_string() };
+                context_entry.insert(entry_key, result.to_string());
                 return result;
             } else if let Some(val) = file_map.get(&field.to_string()) {
                 return Variant::from_string(val);
@@ -1041,7 +1054,7 @@ impl<'a> Searcher<'a> {
             let _ = self.get_column_expr_value(entry, file_info, root_path, file_map, buffer_data, left_expr);
             let buffer_key = left_expr.to_string();
             let aggr_result = function::get_aggregate_value(
-                &column_expr.function,
+                &column_expr.function.as_ref().unwrap(),
                 buffer_data.unwrap_or(&self.raw_output_buffer),
                 buffer_key,
                 &column_expr.val,
@@ -1059,7 +1072,7 @@ impl<'a> Searcher<'a> {
                 }
             }
             let result = function::get_value(
-                &column_expr.function,
+                &column_expr.function.as_ref().unwrap(),
                 function_arg.to_string(),
                 function_args,
                 entry,
@@ -2015,14 +2028,14 @@ impl<'a> Searcher<'a> {
         return Variant::empty(VariantType::String);
     }
 
-    fn get_required_field_values(&mut self, expr: &Expr, current_alias: &str, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>) -> HashMap<Field, Variant> {
+    fn get_required_field_values(&mut self, expr: &Expr, current_alias: &str, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>) -> HashMap<String, Variant> {
         let mut field_values = HashMap::new();
 
         let required_fields = expr.get_fields_required_in_subqueries(current_alias, false);
         if !required_fields.is_empty() {
-            for field in required_fields {
+            for (field, alias) in required_fields {
                 let field_value = self.get_field_value(entry, file_info, root_path, &field);
-                field_values.insert(field, field_value);
+                field_values.insert(alias, field_value);
             }
         }
         
@@ -2051,7 +2064,7 @@ impl<'a> Searcher<'a> {
                 let mut context = self.record_context.borrow_mut();
                 let context_entry = context.entry(current_alias.to_string()).or_insert(HashMap::new());
                 for (field, field_value) in field_values {
-                    context_entry.insert(field.to_string(), field_value.to_string());
+                    context_entry.insert(field, field_value.to_string());
                 }
             }
         }
@@ -2117,7 +2130,7 @@ impl<'a> Searcher<'a> {
                     criteria,
                     Rc::new(self.query.ordering_asc.clone()),
                 ),
-                String::from(buf),
+                String::from(buf).to_string(),
             );
 
             if self.has_aggregate_column() {
@@ -2393,7 +2406,21 @@ impl<'a> Searcher<'a> {
                         Op::NotIn => {
                             let field_value = field_value.to_string();
                             let mut result = true;
-                            for item in expr.clone().right.unwrap().args.unwrap().iter().map(|arg| self.get_column_expr_value(
+                            let right = expr.clone().right.unwrap();
+                            let args = match right.args {
+                                Some(args) => args,
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).iter().map(|s| {
+                                            Expr::value(s.clone().to_string())
+                                        }).collect()
+                                    } else {
+                                        vec![]
+                                    }
+                                }
+                            };
+
+                            for item in args.iter().map(|arg| self.get_column_expr_value(
                                 Some(entry),
                                 file_info,
                                 root_path,
@@ -2484,7 +2511,21 @@ impl<'a> Searcher<'a> {
                         Op::NotIn => {
                             let field_value = field_value.to_int();
                             let mut result = true;
-                            for item in expr.clone().right.unwrap().args.unwrap().iter().map(|arg| self.get_column_expr_value(
+                            let right = expr.clone().right.unwrap();
+                            let args = match right.args {
+                                Some(args) => args,
+                                None => {
+                                    if let Some(subquery) = right.subquery {
+                                        self.get_list_from_subquery(*subquery).iter().map(|s| {
+                                            Expr::value(s.clone().to_string())
+                                        }).collect()
+                                    } else {
+                                        vec![]
+                                    }
+                                }
+                            };
+
+                            for item in args.iter().map(|arg| self.get_column_expr_value(
                                 Some(entry),
                                 file_info,
                                 root_path,
@@ -2915,6 +2956,7 @@ mod tests {
             ordering_asc: Vec::new(),
             limit: 0,
             output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
         }));
 
         // Use default configurations
@@ -2935,6 +2977,7 @@ mod tests {
             ordering_asc: vec![true],
             limit: 0,
             output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
         }));
 
         // Use default configurations
@@ -2958,6 +3001,7 @@ mod tests {
             ordering_asc: Vec::new(),
             limit: 0,
             output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
         }));
 
         // Use default configurations
@@ -3145,5 +3189,36 @@ mod tests {
         assert!(!searcher.is_video("test.txt"));
         assert!(!searcher.is_video("test.jpg"));
         assert!(!searcher.is_video("test"));
+    }
+
+    #[test]
+    fn test_bound_column_resolution_across_root_aliases() {
+        use crate::field::Field;
+
+        // Build a searcher and simulate two roots with aliases `a` and `b`
+        let mut searcher = create_test_searcher();
+
+        // Current file belongs to alias `b`
+        searcher.current_alias = Some(String::from("b"));
+
+        // Pre-populate record_context with a value for alias `a`
+        {
+            let mut ctx = searcher.record_context.borrow_mut();
+            use crate::field::Field;
+            let key = Field::Name.to_string();
+            ctx.insert("a".to_string(), HashMap::from([(key, String::from("foo.txt"))]));
+        }
+
+        // Build an expression that references a bound column from a different root alias
+        let mut bound_expr = Expr::field(Field::Name);
+        bound_expr.root_alias = Some(String::from("a"));
+
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let root_path = Path::new(".");
+
+        // Since current_alias is `b`, and the expression requests `a.name`,
+        // get_column_expr_value should read the value from record_context rather than the current entry
+        let v = searcher.get_column_expr_value(None, &None, root_path, &mut file_map, None, &bound_expr);
+        assert_eq!(v.to_string(), "foo.txt");
     }
 }
