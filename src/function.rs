@@ -20,7 +20,8 @@ use serde::ser::{Serialize, Serializer};
 use xattr::FileExt;
 
 use crate::fileinfo::FileInfo;
-use crate::util::{capitalize, error_exit, format_date, format_time, format_datetime, parse_datetime};
+use crate::util::{capitalize, format_date, format_time, format_datetime, parse_datetime};
+use crate::util::error::error_exit;
 use crate::util::variant::{Variant, VariantType};
 
 macro_rules! functions {
@@ -754,7 +755,7 @@ pub fn get_value(
                     Some(modifier) => modifier,
                     _ => "",
                 };
-                let file_size = crate::util::format_filesize(size, modifier);
+                let file_size = crate::util::format_filesize(size, modifier).unwrap_or(String::new());
                 return Variant::from_string(&file_size);
             }
 
