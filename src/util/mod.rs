@@ -38,6 +38,7 @@ pub use self::datetime::format_date;
 pub use self::datetime::format_datetime;
 pub use self::datetime::format_time;
 pub use self::datetime::parse_datetime;
+pub use self::datetime::set_us_dates;
 pub use self::datetime::to_local_datetime;
 pub use self::glob::convert_glob_to_pattern;
 pub use self::glob::convert_like_to_pattern;
@@ -421,8 +422,8 @@ pub fn format_filesize(size: u64, modifier: &str) -> Result<String, String> {
 pub fn str_to_bool(val: &str) -> Option<bool> {
     let str_val = val.to_ascii_lowercase();
     match str_val.as_str() {
-        "true" | "1" | "yes" | "y" => Some(true),
-        "false" | "0" | "no" | "n" => Some(false),
+        "true" | "1" | "yes" | "y" | "on" => Some(true),
+        "false" | "0" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
 }

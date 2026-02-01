@@ -29,8 +29,8 @@ use crate::output::OutputFormat;
 use crate::parser::Parser;
 use crate::query::RootOptions;
 use crate::searcher::Searcher;
-use crate::util::str_to_bool;
-use crate::util::error::error_message;
+use crate::util::{set_us_dates, str_to_bool};
+use crate::util::error::{error_message, get_no_errors, set_no_errors};
 
 mod config;
 mod expr;
@@ -144,6 +144,10 @@ fn main() -> ExitCode {
             };
 
             args.remove(0);
+        } else if first_arg.starts_with("--no-error") {
+            set_no_errors(true);
+        } else if first_arg.starts_with("--us-date") { 
+            set_us_dates(true);
         } else {
             break;
         }
@@ -161,6 +165,10 @@ fn main() -> ExitCode {
         }
 
         first_arg = args[0].to_ascii_lowercase();
+    }
+    
+    if config.us_dates.unwrap_or(default_config.us_dates.unwrap()) {
+        set_us_dates(true);
     }
 
     let mut exit_value = None::<u8>;
@@ -197,6 +205,7 @@ fn main() -> ExitCode {
                             if parts.len() < 2 {
                                 error_message("cd", "no path specified");
                             } else {
+                                let _ = rl.add_history_entry(&cmd);
                                 let new_path: String = parts.iter().skip(1).cloned().collect::<Vec<&str>>().join(" ");
                                 match env::set_current_dir(new_path) {
                                     Ok(()) => {}
@@ -204,8 +213,33 @@ fn main() -> ExitCode {
                                 }
                             }
                         }
+                        Ok(cmd) if cmd.to_ascii_lowercase().trim().starts_with("errors") => {
+                            let _ = rl.add_history_entry(&cmd);
+                            let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
+                            if parts.len() == 2 {
+                                let no_errors = !str_to_bool(&parts[1]).unwrap_or(true);
+                                set_no_errors(no_errors);
+                            }
+                            println!("Errors are {}", if no_color {
+                                (if get_no_errors() { "OFF" } else { "ON" }).into()
+                            } else {
+                                Yellow.paint(if get_no_errors() { "OFF" } else { "ON" })
+                            });
+                        }
+                        Ok(cmd) if cmd.to_ascii_lowercase().trim().starts_with("debug") => {
+                            let _ = rl.add_history_entry(&cmd);
+                            let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
+                            if parts.len() == 2 {
+                                config.debug = str_to_bool(&parts[1]).unwrap_or(false);
+                            }
+                            if no_color {
+                                println!("DEBUG IS {}", (if config.debug { "ON" } else { "OFF" }));
+                            } else {
+                                println!("DEBUG IS {}", Yellow.paint(if config.debug { "ON" } else { "OFF" }));
+                            }
+                        }
                         Ok(query) => {
-                            let _ = rl.add_history_entry(query.as_str());
+                            let _ = rl.add_history_entry(&query);
                             exec_search(vec![query], &mut config, &default_config, no_color, true);
                         }
                         Err(ReadlineError::Interrupted) => {
@@ -328,7 +362,7 @@ fn short_usage_info(no_color: bool) {
     }
 
     println!();
-    println!("Usage: fselect [ARGS] COLUMN[, COLUMN...] [from PATH[, PATH...]] [where EXPR] [group by COLUMN, ...] [order by COLUMN (asc|desc), ...] [limit N] [into FORMAT]");
+    println!("Usage: fselect [ARGS] COLUMN[, COLUMN...] [from PATH[, PATH...]] [where EXPR] [group by COLUMN, ...] [order by COLUMN (asc|desc), ...] [limit N] [offset N] [into FORMAT]");
 }
 
 fn help_hint() {
@@ -424,9 +458,10 @@ Interactive mode:
     help            Get usage help
     pwd             Print the current working directory
     cd PATH         Change the current working directory to PATH
+    errors [ON|OFF] Toggle whether errors are shown or not
     exit | quit     Exit fselect
     ", format_root_options(), 
-        Cyan.underline().paint("https://docs.rs/regex/1.10.2/regex/#syntax"),
+        if no_color { "https://docs.rs/regex/1.10.2/regex/#syntax".into() } else { Cyan.underline().paint("https://docs.rs/regex/1.10.2/regex/#syntax") },
         format_field_usage(),
         format_function_usage(),
         format_output_usage()

@@ -27,7 +27,7 @@ Find files with SQL-like queries.
 
 ### Basic usage
 
-    fselect [ARGS] COLUMN[, COLUMN...] [from ROOT[, ROOT...]] [where EXPR] [group by COLUMNS] [order by COLUMNS] [limit N] [into FORMAT]
+    fselect [ARGS] COLUMN[, COLUMN...] [from ROOT[, ROOT...]] [where EXPR] [group by COLUMNS] [order by COLUMNS] [limit N] [offset N] [into FORMAT]
 
 You write an SQL-like query, that's it.
 
@@ -46,7 +46,7 @@ What to search? Use `where` with any number of conditions.
 Order results like in real SQL with `order by`. All columns are supported for ordering by, 
 as well as `asc`/`desc` parameters and positional numeric shortcuts.
 
-Limiting search results is possible with `limit`. Formatting options are supported with `into` keyword.
+Limiting search results is possible with `limit` and `offset`. Formatting options are supported with `into` keyword.
 
 If you want to use operators containing `>` or `<`, 
 put the whole query into the double quotes. 
@@ -602,7 +602,11 @@ Or simply use relative offsets as days:
 
 [More about writing dates in plain English](https://github.com/stevedonovan/chrono-english)
 
-**fselect** uses *UK* locale, not American style dates, i.e. `08/02` means *February 8th*.
+**fselect** uses *UK* locale by default, not American style dates, i.e. `08/02` means *February 8th* by default.
+
+To change this behavior, supply `--us-dates` option to the `fselect` command, or put `us_dates = true` into the configuration file.
+
+The safest way to specify dates is to use ISO 8601 format: `YYYY-MM-DD HH:MM:SS`.
 
 ### Regular expressions
 
@@ -802,6 +806,7 @@ source ~/.bashrc
 | `--interactive` or `-i` or `/i`           | Run in [interactive mode](#interactive-mode) |
 | `--config` or `-c` or `/config`           | Specify config file location                 |
 | `--nocolor` or `--no-color` or `/nocolor` | Disable colors                               |
+| `--no-errors`                             | Suppress error reporting                     |
 | `--help` or `-h` or `/?` or `/h`          | Show help and exit                           |
 
 ### Interactive mode
@@ -813,6 +818,7 @@ In interactive mode, you can:
 - edit and refine queries iteratively
 - use command history (up/down arrows) to recall previous queries
 - get current directory with `pwd` and change it with `cd`
+- suppress error reporting with `errors off`
 - exit with `quit`, `exit`, Ctrl+C or Ctrl+D
 
 ### Environment variables
