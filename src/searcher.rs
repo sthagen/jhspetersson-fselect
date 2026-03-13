@@ -397,6 +397,9 @@ impl<'a> Searcher<'a> {
             }
 
             self.dir_queue.clear();
+            self.visited_dirs.clear();
+            self.hgignore_filters.clear();
+            self.dockerignore_filters.clear();
 
             let _result = self.visit_dir(
                 root_dir,
@@ -639,15 +642,6 @@ impl<'a> Searcher<'a> {
         process_queue: bool,
         root_dir: &Path,
     ) -> io::Result<()> {
-        // Prevents infinite loops when following symlinks
-        if self.current_follow_symlinks {
-            if self.visited_dirs.contains(&dir.to_path_buf()) {
-                return Ok(());
-            } else {
-                self.visited_dirs.insert(dir.to_path_buf());
-            }
-        }
-
         // Canonicalize the path to resolve symlinks and relative paths
         let canonical_path = crate::util::canonical_path(&dir.to_path_buf());
         if canonical_path.is_err() {
@@ -662,6 +656,16 @@ impl<'a> Searcher<'a> {
         }
 
         let canonical_path = canonical_path.unwrap();
+
+        // Prevents infinite loops when following symlinks
+        if self.current_follow_symlinks {
+            let canonical_pathbuf = PathBuf::from(&canonical_path);
+            if self.visited_dirs.contains(&canonical_pathbuf) {
+                return Ok(());
+            } else {
+                self.visited_dirs.insert(canonical_pathbuf);
+            }
+        }
         let canonical_depth = crate::util::calc_depth(&canonical_path);
 
         let base_depth = match root_depth {
@@ -669,7 +673,7 @@ impl<'a> Searcher<'a> {
             _ => root_depth,
         };
 
-        let depth = canonical_depth - base_depth + 1;
+        let depth = canonical_depth.saturating_sub(base_depth) + 1;
 
         // Read the directory and process each entry
         match fs::read_dir(dir) {
@@ -721,14 +725,16 @@ impl<'a> Searcher<'a> {
                             if pass_ignores {
                                 if min_depth == 0 || depth >= min_depth {
                                     let checked = self.check_file(&entry, root_dir, &None);
-                                    if checked.is_err() {
-                                        self.error_count += 1;
-                                        path_error_message(&path, checked.err().unwrap());
-                                        return Ok(());
-                                    }
-                                    let checked = checked?;
-                                    if !checked {
-                                        return Ok(());
+                                    match checked {
+                                        Err(err) => {
+                                            self.error_count += 1;
+                                            path_error_message(&path, err);
+                                            continue;
+                                        }
+                                        Ok(false) => {
+                                            return Ok(());
+                                        }
+                                        Ok(true) => {}
                                     }
 
                                     if search_archives
@@ -745,10 +751,16 @@ impl<'a> Searcher<'a> {
 
                                                     if let Ok(afile) = archive.by_index(i) {
                                                         let file_info = to_file_info(&afile);
-                                                        let checked = self
-                                                            .check_file(&entry, root_dir, &Some(file_info))?;
-                                                        if !checked {
-                                                            return Ok(());
+                                                        match self.check_file(&entry, root_dir, &Some(file_info)) {
+                                                            Err(err) => {
+                                                                self.error_count += 1;
+                                                                path_error_message(&path, err);
+                                                                continue;
+                                                            }
+                                                            Ok(false) => {
+                                                                return Ok(());
+                                                            }
+                                                            Ok(true) => {}
                                                         }
                                                     }
                                                 }
@@ -765,8 +777,19 @@ impl<'a> Searcher<'a> {
 
                                         if file_type.is_symlink() {
                                             if let Ok(resolved) = std::fs::read_link(&path) {
-                                                ok = true;
-                                                path = resolved;
+                                                let resolved_path = if resolved.is_relative() {
+                                                    if let Some(parent) = path.parent() {
+                                                        parent.join(&resolved)
+                                                    } else {
+                                                        resolved
+                                                    }
+                                                } else {
+                                                    resolved
+                                                };
+                                                if resolved_path.is_dir() {
+                                                    ok = true;
+                                                    path = resolved_path;
+                                                }
                                             }
                                         } else if file_type.is_dir() {
                                             ok = true;
@@ -973,7 +996,7 @@ impl<'a> Searcher<'a> {
                 if let Some(ref right) = column_expr.right {
                     let right_result =
                         self.get_column_expr_value(entry, file_info, root_path, file_map, buffer_data, right)?;
-                        result = Ok(op.calc(&left_result, &right_result));
+                        result = op.calc(&left_result, &right_result);
                         file_map.insert(column_expr_str, result.clone()?.to_string());
                 } else {
                     result = Ok(left_result);
@@ -3295,4 +3318,220 @@ mod tests {
         let v = searcher.get_column_expr_value(None, &None, root_path, &mut file_map, None, &bound_expr);
         assert_eq!(v.unwrap().to_string(), "foo.txt");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dfs_follows_relative_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("fselect_test_dfs_rel_symlink");
+        let _ = fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let hidden = tmp.join("hidden");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("file.txt"), "hello").unwrap();
+        symlink("../hidden", root.join("link")).unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let _ = searcher.visit_dir(
+            &root,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Dfs,
+            true,
+            &root,
+        );
+
+        let found = searcher.found;
+        let errors = searcher.error_count;
+        let _ = fs::remove_dir_all(&tmp);
+        assert!(
+            found >= 1 && errors == 0,
+            "should find file through relative symlink, found={} errors={}",
+            found, errors
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bfs_follows_relative_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("fselect_test_bfs_rel_symlink");
+        let _ = fs::remove_dir_all(&tmp);
+        let root = tmp.join("root");
+        let hidden = tmp.join("hidden");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(hidden.join("file.txt"), "hello").unwrap();
+        symlink("../hidden", root.join("link")).unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let _ = searcher.visit_dir(
+            &root,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Bfs,
+            true,
+            &root,
+        );
+
+        let found = searcher.found;
+        let errors = searcher.error_count;
+        let _ = fs::remove_dir_all(&tmp);
+        assert!(
+            found >= 1 && errors == 0,
+            "should find file through relative symlink, found={} errors={}",
+            found, errors
+        );
+    }
+
+    #[test]
+    fn test_depth_underflow_protection() {
+        let canonical_depth: u32 = 2;
+        let base_depth: u32 = 5;
+        let depth = canonical_depth.saturating_sub(base_depth) + 1;
+        assert_eq!(depth, 1, "depth should not underflow");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_visited_dirs_uses_canonical_path() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("fselect_test_visited_canonical");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("a")).unwrap();
+        fs::create_dir_all(tmp.join("b")).unwrap();
+        fs::write(tmp.join("a").join("file.txt"), "hello").unwrap();
+        symlink("../a", tmp.join("b").join("link_to_a")).unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let _ = searcher.visit_dir(
+            &tmp,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Dfs,
+            true,
+            &tmp,
+        );
+
+        let found = searcher.found;
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(
+            found, 4,
+            "a/ should not be re-traversed via symlink, found={}",
+            found
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_to_file_no_dir_traversal_error() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("fselect_test_symlink_to_file");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("real_file.txt"), "hello").unwrap();
+        symlink("real_file.txt", tmp.join("link_to_file")).unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let _ = searcher.visit_dir(
+            &tmp,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Dfs,
+            true,
+            &tmp,
+        );
+
+        let errors = searcher.error_count;
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(
+            errors, 0,
+            "symlink to file should not cause directory traversal error, errors={}",
+            errors
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_visited_dirs_cleared_between_roots() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = std::env::temp_dir().join("fselect_test_visited_cleared");
+        let _ = fs::remove_dir_all(&tmp);
+        let shared = tmp.join("shared");
+        let root_a = tmp.join("root_a");
+        let root_b = tmp.join("root_b");
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&root_a).unwrap();
+        fs::create_dir_all(&root_b).unwrap();
+        fs::write(shared.join("file.txt"), "hello").unwrap();
+        symlink(&shared, root_a.join("link")).unwrap();
+        symlink(&shared, root_b.join("link")).unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let _ = searcher.visit_dir(
+            &root_a,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Dfs,
+            true,
+            &root_a,
+        );
+
+        let found_after_a = searcher.found;
+
+        searcher.visited_dirs.clear();
+
+        let _ = searcher.visit_dir(
+            &root_b,
+            0, 0, 0,
+            false, false,
+            #[cfg(feature = "git")]
+            None,
+            false, false,
+            TraversalMode::Dfs,
+            true,
+            &root_b,
+        );
+
+        let found_after_b = searcher.found;
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert!(
+            found_after_b > found_after_a,
+            "root_b should find files through its own symlink, found_a={} found_b={}",
+            found_after_a, found_after_b
+        );
+    }
+
 }

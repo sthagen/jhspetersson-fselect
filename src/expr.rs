@@ -246,18 +246,20 @@ impl Expr {
     }
     
     pub fn add_left(&mut self, left: Expr) {
+        let old_weight = self.left.as_ref().map_or(0, |l| l.weight);
         let left_weight = left.weight;
         self.left = Some(Box::new(left));
-        self.weight += left_weight;
+        self.weight = self.weight - old_weight + left_weight;
     }
     
     pub fn set_args(&mut self, args: Vec<Expr>) {
+        let old_weight: i32 = self.args.as_ref().map_or(0, |a| a.iter().map(|e| e.weight).sum());
         let mut args_weight = 0;
         for arg in &args {
             args_weight += arg.weight;
         }
         self.args = Some(args);
-        self.weight += args_weight;
+        self.weight = self.weight - old_weight + args_weight;
     }
 
     pub fn has_aggregate_function(&self) -> bool {
@@ -330,7 +332,13 @@ impl Expr {
         if let Some(ref right) = self.right {
             result.extend(right.get_fields_required_in_subqueries(alias, parent_subquery));
         }
-        
+
+        if let Some(ref args) = self.args {
+            for arg in args {
+                result.extend(arg.get_fields_required_in_subqueries(alias, parent_subquery));
+            }
+        }
+
         if let Some(ref expr_alias) = self.root_alias {
             if expr_alias == alias {
                 if let Some(field) = self.field {
@@ -368,10 +376,27 @@ impl Expr {
             return true;
         }
 
-        match expr.left {
-            Some(ref left) => Self::contains_numeric_field(left),
-            None => false,
+        if let Some(ref left) = expr.left {
+            if Self::contains_numeric_field(left) {
+                return true;
+            }
         }
+
+        if let Some(ref right) = expr.right {
+            if Self::contains_numeric_field(right) {
+                return true;
+            }
+        }
+
+        if let Some(ref args) = expr.args {
+            for arg in args {
+                if Self::contains_numeric_field(arg) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     pub fn contains_datetime(&self) -> bool {
@@ -388,10 +413,27 @@ impl Expr {
             return true;
         }
 
-        match expr.left {
-            Some(ref left) => Self::contains_datetime_field(left),
-            None => false,
+        if let Some(ref left) = expr.left {
+            if Self::contains_datetime_field(left) {
+                return true;
+            }
         }
+
+        if let Some(ref right) = expr.right {
+            if Self::contains_datetime_field(right) {
+                return true;
+            }
+        }
+
+        if let Some(ref args) = expr.args {
+            for arg in args {
+                if Self::contains_datetime_field(arg) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     pub fn contains_colorized(&self) -> bool {
@@ -412,10 +454,19 @@ impl Expr {
             return true;
         }
 
-        match expr.left {
-            Some(ref left) => Self::contains_colorized_field(left),
-            None => false,
+        if let Some(ref left) = expr.left {
+            if Self::contains_colorized_field(left) {
+                return true;
+            }
         }
+
+        if let Some(ref right) = expr.right {
+            if Self::contains_colorized_field(right) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -452,10 +503,30 @@ impl Display for Expr {
                 if let Some(ref left) = self.left {
                     fmt.write_str(&left.to_string())?;
                 }
+                if let Some(ref args) = self.args {
+                    for (i, arg) in args.iter().enumerate() {
+                        if self.left.is_some() || i > 0 {
+                            fmt.write_str(", ")?;
+                        }
+                        fmt.write_str(&arg.to_string())?;
+                    }
+                }
                 fmt.write_char(')')?;
             }
         } else if let Some(ref left) = self.left {
             fmt.write_str(&left.to_string())?;
+        }
+
+        if let Some(ref op) = self.arithmetic_op {
+            fmt.write_str(&format!(" {:?} ", op))?;
+        }
+
+        if let Some(ref op) = self.logical_op {
+            fmt.write_str(&format!(" {:?} ", op))?;
+        }
+
+        if let Some(ref op) = self.op {
+            fmt.write_str(&format!(" {:?} ", op))?;
         }
 
         if let Some(ref field) = self.field {
@@ -597,6 +668,159 @@ mod tests {
         assert_eq!(map, HashMap::from([(Field::Name, String::from("Name")), (Field::Size, String::from("Size"))]));
         let map = expr.right.unwrap().subquery.unwrap().expr.unwrap().get_fields_required_in_subqueries("t2", false);
         assert!(map.is_empty(), "Expected no required fields for t2 in correlated subquery");
+    }
+
+    #[test]
+    fn contains_numeric_right_side_of_arithmetic() {
+        let expr = Expr::arithmetic_op(
+            Expr::value("1".to_string()),
+            ArithmeticOp::Add,
+            Expr::field(Field::Size),
+        );
+        assert!(expr.contains_numeric());
+    }
+
+    #[test]
+    fn contains_numeric_right_side_of_op() {
+        let expr = Expr::op(
+            Expr::value("100".to_string()),
+            Op::Gt,
+            Expr::field(Field::Size),
+        );
+        assert!(expr.contains_numeric());
+    }
+
+    #[test]
+    fn contains_datetime_right_side_of_op() {
+        let expr = Expr::op(
+            Expr::value("2024-01-01".to_string()),
+            Op::Lt,
+            Expr::field(Field::Accessed),
+        );
+        assert!(expr.contains_datetime());
+    }
+
+    #[test]
+    fn contains_colorized_right_side_of_op() {
+        let expr = Expr::op(
+            Expr::value("foo".to_string()),
+            Op::Eq,
+            Expr::field(Field::Name),
+        );
+        assert!(expr.contains_colorized());
+    }
+
+    #[test]
+    fn contains_numeric_in_function_args() {
+        let mut expr = Expr::function(Function::Concat);
+        expr.set_args(vec![Expr::field(Field::Size)]);
+        assert!(expr.contains_numeric());
+    }
+
+    #[test]
+    fn contains_datetime_in_function_args() {
+        let mut expr = Expr::function(Function::Concat);
+        expr.set_args(vec![Expr::field(Field::Accessed)]);
+        assert!(expr.contains_datetime());
+    }
+
+    #[test]
+    fn display_arithmetic_op_shows_operator() {
+        let expr = Expr::arithmetic_op(
+            Expr::value("1".to_string()),
+            ArithmeticOp::Add,
+            Expr::value("2".to_string()),
+        );
+        let displayed = format!("{}", expr);
+        assert!(displayed.contains("Add"),
+            "Expected 'Add' in display, got: {}", displayed);
+    }
+
+    #[test]
+    fn display_logical_op_shows_operator() {
+        let expr = Expr::logical_op(
+            Expr::op(
+                Expr::field(Field::Name),
+                Op::Eq,
+                Expr::value("foo".to_string()),
+            ),
+            LogicalOp::And,
+            Expr::op(
+                Expr::field(Field::Size),
+                Op::Gt,
+                Expr::value("0".to_string()),
+            ),
+        );
+        let displayed = format!("{}", expr);
+        assert!(displayed.contains("And"),
+            "Expected 'And' in display, got: {}", displayed);
+    }
+
+    #[test]
+    fn display_comparison_op_shows_operator() {
+        let expr = Expr::op(
+            Expr::field(Field::Size),
+            Op::Gt,
+            Expr::value("100".to_string()),
+        );
+        let displayed = format!("{}", expr);
+        assert!(displayed.contains("Gt"),
+            "Expected 'Gt' in display, got: {}", displayed);
+    }
+
+    #[test]
+    fn display_function_shows_args() {
+        let mut expr = Expr::function(Function::Round);
+        expr.add_left(Expr::value("3.14".to_string()));
+        expr.set_args(vec![Expr::value("2".to_string())]);
+        let displayed = format!("{}", expr);
+        assert!(displayed.contains("2"),
+            "Expected args in display, got: {}", displayed);
+    }
+
+    #[test]
+    fn add_left_replaces_old_weight() {
+        let heavy = Expr::field(Field::Accessed);
+        let heavy_weight = heavy.weight;
+        let light = Expr::value("x".to_string());
+        let light_weight = light.weight;
+
+        let mut expr = Expr::function_left(Function::Lower, Some(Box::new(heavy)));
+        let base_weight = expr.weight;
+        assert_eq!(base_weight, Function::Lower.get_weight() + heavy_weight);
+
+        expr.add_left(light);
+        assert_eq!(expr.weight, Function::Lower.get_weight() + light_weight,
+            "weight should reflect only the new left, got: {}", expr.weight);
+    }
+
+    #[test]
+    fn set_args_replaces_old_weight() {
+        let mut expr = Expr::function(Function::Concat);
+        let heavy_args = vec![Expr::field(Field::Accessed)];
+        let heavy_weight: i32 = heavy_args.iter().map(|a| a.weight).sum();
+        expr.set_args(heavy_args);
+        let weight_after_first = expr.weight;
+        assert_eq!(weight_after_first, Function::Concat.get_weight() + heavy_weight);
+
+        let light_args = vec![Expr::value("x".to_string())];
+        let light_weight: i32 = light_args.iter().map(|a| a.weight).sum();
+        expr.set_args(light_args);
+        assert_eq!(expr.weight, Function::Concat.get_weight() + light_weight,
+            "weight should reflect only the new args, got: {}", expr.weight);
+    }
+
+    #[test]
+    fn get_fields_required_in_subqueries_checks_args() {
+        let mut func_expr = Expr::function(Function::ConcatWs);
+        func_expr.add_left(Expr::value(",".to_string()));
+        func_expr.set_args(vec![
+            Expr::field_with_root_alias(Field::Name, Some("t1".to_string())),
+            Expr::field_with_root_alias(Field::Name, Some("t2".to_string())),
+        ]);
+        let map = func_expr.get_fields_required_in_subqueries("t1", true);
+        assert_eq!(map.len(), 1, "Expected t1.name in args to be found, got: {:?}", map);
+        assert!(map.contains_key(&Field::Name));
     }
 
     #[test]

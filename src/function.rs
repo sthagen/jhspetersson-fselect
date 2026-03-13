@@ -20,7 +20,7 @@ use serde::ser::{Serialize, Serializer};
 use xattr::FileExt;
 
 use crate::fileinfo::FileInfo;
-use crate::util::{capitalize, format_date, format_time, format_datetime, parse_datetime};
+use crate::util::{capitalize_initials, format_date, format_time, format_datetime, parse_datetime};
 use crate::util::variant::{Variant, VariantType};
 
 macro_rules! functions {
@@ -154,412 +154,6 @@ macro_rules! functions {
     }
 }
 
-functions! {
-    #[group_order = ["String", "Japanese string", "Numeric", "Datetime", "Aggregate", "Xattr", "Other"]]
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
-    pub enum Function {
-        #[text = ["lower", "lowercase", "lcase"]]
-        @group = "String"
-        @description = "Convert the value to lowercase"
-        Lower,
-        
-        #[text = ["upper", "uppercase", "ucase"]]
-        @group = "String"
-        @description = "Convert the value to UPPERCASE"
-        Upper,
-        
-        #[text = ["initcap"]]
-        @group = "String"
-        @description = "Capitalize the first letter of each word (Title Case)"
-        InitCap,
-        
-        #[text = ["length", "len"], data_type = "numeric"]
-        @group = "String"
-        @description = "Get the length of the string"
-        Length,
-        
-        #[text = ["to_base64", "base64"]]
-        @group = "String"
-        @description = "Convert the value to base64"
-        ToBase64,
-        
-        #[text = ["from_base64"]]
-        @group = "String"
-        @description = "Read the value as base64"
-        FromBase64,
-    
-        #[text = ["concat"]]
-        @group = "String"
-        @description = "Concatenate the value with the arguments"
-        Concat,
-        
-        #[text = ["concat_ws"]]
-        @group = "String"
-        @description = "Concatenate the arguments, separated by the value"
-        ConcatWs,
-        
-        #[text = ["locate", "position"], data_type = "numeric"]
-        @group = "String"
-        @description = "Get the position of a substring in the value"
-        Locate,
-        
-        #[text = ["substr", "substring"]]
-        @group = "String"
-        @description = "Get a substring of the value, from a position and length"
-        Substring,
-        
-        #[text = ["replace"]]
-        @group = "String"
-        @description = "Replace a substring in the value with another string"
-        Replace,
-        
-        #[text = ["trim"]]
-        @group = "String"
-        @description = "Trim whitespace from the value"
-        Trim,
-        
-        #[text = ["ltrim"]]
-        @group = "String"
-        @description = "Trim whitespace from the start of the value"
-        LTrim,
-        
-        #[text = ["rtrim"]]
-        @group = "String"
-        @description = "Trim whitespace from the end of the value"
-        RTrim,
-    
-        #[text = ["bin"]]
-        @group = "Numeric"
-        @description = "Get the binary representation of the value"
-        Bin,
-        
-        #[text = ["hex"]]
-        @group = "Numeric"
-        @description = "Get the hexadecimal representation of the value"
-        Hex,
-        
-        #[text = ["oct"]]
-        @group = "Numeric"
-        @description = "Get the octal representation of the value"
-        Oct,
-        
-        #[text = ["abs"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the absolute value of the number"
-        Abs,
-        
-        #[text = ["power", "pow"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Raise the value to the power of another value"
-        Power,
-        
-        #[text = ["sqrt"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the square root of the value"
-        Sqrt,
-        
-        #[text = ["log"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the logarithm of the value with a specific base"
-        Log,
-        
-        #[text = ["ln"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the natural logarithm of the value"
-        Ln,
-        
-        #[text = ["exp"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get e raised to the power of the specified number"
-        Exp,
-        
-        #[text = ["least"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the smallest value"
-        Least,
-        
-        #[text = ["greatest"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Get the largest value"
-        Greatest,
-        
-        #[text = ["pi"], data_type = "numeric"]
-        @weight = 1
-        @group = "Numeric"
-        @description = "Get the value of Pi (π)"
-        Pi,
-        
-        #[text = ["floor"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Round down to the nearest integer"
-        Floor,
-        
-        #[text = ["ceil", "ceiling"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Round up to the nearest integer"
-        Ceil,
-        
-        #[text = ["round"], data_type = "numeric"]
-        @group = "Numeric"
-        @description = "Round to the nearest integer"
-        Round,
-    
-        #[text = ["contains_japanese", "japanese"], data_type = "boolean"]
-        @group = "Japanese string"
-        @description = "Check if the string contains Japanese characters"
-        ContainsJapanese,
-        
-        #[text = ["contains_hiragana", "hiragana"], data_type = "boolean"]
-        @group = "Japanese string"
-        @description = "Check if the string contains Hiragana characters"
-        ContainsHiragana,
-        
-        #[text = ["contains_katakana", "katakana"], data_type = "boolean"]
-        @group = "Japanese string"
-        @description = "Check if the string contains Katakana characters"
-        ContainsKatakana,
-        
-        #[text = ["contains_kana", "kana"], data_type = "boolean"]
-        @group = "Japanese string"
-        @description = "Check if the string contains Kana characters"
-        ContainsKana,
-        
-        #[text = ["contains_kanji", "kanji"], data_type = "boolean"]
-        @group = "Japanese string"
-        @description = "Check if the string contains Kanji characters"
-        ContainsKanji,
-    
-        #[text = ["contains_greek", "greek"], data_type = "boolean"]
-        @group = "Greek string"
-        @description = "Check if the string contains Greek characters"
-        ContainsGreek,
-
-        #[text = ["format_size", "format_filesize"]]
-        @group = "Other"
-        @description = "Format a file size in human-readable format"
-        FormatSize,
-        
-        #[text = ["format_time", "pretty_time"]]
-        @group = "Other"
-        @description = "Format a time duration in human-readable format"
-        FormatTime,
-    
-        #[text = ["current_date", "cur_date", "curdate"]]
-        @weight = 1
-        @group = "Datetime"
-        @description = "Get the current date"
-        CurrentDate,
-        
-        #[text = ["current_time", "cur_time", "curtime"]]
-        @weight = 1
-        @group = "Datetime"
-        @description = "Get the current time (HH:MM:SS)"
-        CurrentTime,
-        
-        #[text = ["current_timestamp", "now"]]
-        @weight = 1
-        @group = "Datetime"
-        @description = "Get the current timestamp (YYYY-MM-DD HH:MM:SS)"
-        CurrentTimestamp,
-        
-        #[text = ["day"], data_type = "numeric"]
-        @group = "Datetime"
-        @description = "Get the day from a date"
-        Day,
-        
-        #[text = ["month"], data_type = "numeric"]
-        @group = "Datetime"
-        @description = "Get the month from a date"
-        Month,
-        
-        #[text = ["year"], data_type = "numeric"]
-        @group = "Datetime"
-        @description = "Get the year from a date"
-        Year,
-        
-        #[text = ["dayofweek", "dow"], data_type = "numeric"]
-        @group = "Datetime"
-        @description = "Get the day of the week from a date"
-        DayOfWeek,
-    
-        #[text = ["current_uid"], data_type = "numeric"]
-        @weight = 1
-        @group = "Other"
-        @description = "Get the current user ID"
-        #[cfg(all(unix, feature = "users"))]
-        CurrentUid,
-        
-        #[text = ["current_user"]]
-        @weight = 1
-        @group = "Other"
-        @description = "Get the current username"
-        #[cfg(all(unix, feature = "users"))]
-        CurrentUser,
-        
-        #[text = ["current_gid"], data_type = "numeric"]
-        @weight = 1
-        @group = "Other"
-        @description = "Get the current group ID"
-        #[cfg(all(unix, feature = "users"))]
-        CurrentGid,
-        
-        #[text = ["current_group"]]
-        @weight = 1
-        @group = "Other"
-        @description = "Get the current group name"
-        #[cfg(all(unix, feature = "users"))]
-        CurrentGroup,
-    
-        #[text = ["contains"], data_type = "boolean"]
-        @weight = 1024
-        @group = "Other"
-        @description = "Checks if a file contains a substring"
-        Contains,
-    
-        #[text = ["has_xattr"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if the file has a specific extended attribute"
-        #[cfg(unix)]
-        HasXattr,
-
-        #[text = ["xattr"]]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Get the value of an extended attribute"
-        #[cfg(unix)]
-        Xattr,
-
-        #[text = ["has_extattr"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if the file has a specific extended file attribute flag"
-        #[cfg(target_os = "linux")]
-        HasExtattr,
-        
-        #[text = ["acl"]]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Get all POSIX ACL entries in standard form"
-        #[cfg(target_os = "linux")]
-        Acl,
-
-        #[text = ["has_acl_entry"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if a specific POSIX ACL entry exists"
-        #[cfg(target_os = "linux")]
-        HasAclEntry,
-
-        #[text = ["acl_entry"]]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Get permissions of a specific POSIX ACL entry"
-        #[cfg(target_os = "linux")]
-        AclEntry,
-
-        #[text = ["default_acl"]]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Get all default POSIX ACL entries in standard form"
-        #[cfg(target_os = "linux")]
-        DefaultAcl,
-
-        #[text = ["has_default_acl_entry"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if a specific default POSIX ACL entry exists"
-        #[cfg(target_os = "linux")]
-        HasDefaultAclEntry,
-
-        #[text = ["default_acl_entry"]]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Get permissions of a specific default POSIX ACL entry"
-        #[cfg(target_os = "linux")]
-        DefaultAclEntry,
-
-        #[text = ["has_capabilities", "has_caps"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if the file has capabilities (security.capability xattr)"
-        #[cfg(target_os = "linux")]
-        HasCapabilities,
-        
-        #[text = ["has_capability", "has_cap"], data_type = "boolean"]
-        @weight = 2
-        @group = "Xattr"
-        @description = "Check if the file has a specific capability (security.capability xattr)"
-        #[cfg(target_os = "linux")]
-        HasCapability,
-    
-        #[text = ["coalesce"]]
-        @group = "Other"
-        @description = "Return the first non-empty value"
-        Coalesce,
-        
-        #[text = ["rand", "random"], data_type = "numeric"]
-        @weight = 1
-        @group = "Numeric"
-        @description = "Gets a random number from 0 to the value, or between two values"
-        Random,
-    
-        #[text = ["min"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the minimum value"
-        Min,
-        
-        #[text = ["max"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the maximum value"
-        Max,
-        
-        #[text = ["avg"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the average value"
-        Avg,
-        
-        #[text = ["sum"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the sum of all values"
-        Sum,
-        
-        #[text = ["count"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the number of values"
-        Count,
-    
-        #[text = ["stddev_pop", "stddev", "std"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the population standard deviation"
-        StdDevPop,
-        
-        #[text = ["stddev_samp"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the sample standard deviation"
-        StdDevSamp,
-        
-        #[text = ["var_pop", "variance"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the population variance"
-        VarPop,
-        
-        #[text = ["var_samp"], data_type = "numeric"]
-        @is_aggregate = true
-        @group = "Aggregate"
-        @description = "Get the sample variance"
-        VarSamp,
-    }
-}
-
 /// Applies a function to a value and returns the result.
 /// If no function is provided, the original value is returned.
 ///
@@ -583,11 +177,7 @@ pub fn get_value(
         Function::Lower => Ok(Variant::from_string(&function_arg.to_lowercase())),
         Function::Upper => Ok(Variant::from_string(&function_arg.to_uppercase())),
         Function::InitCap => {
-            let result = function_arg
-                .split_whitespace()
-                .map(|s| capitalize(&s.to_lowercase()))
-                .collect::<Vec<_>>()
-                .join(" ");
+            let result = capitalize_initials(&function_arg);
             Ok(Variant::from_string(&result))
         }
         Function::Length => {
@@ -609,17 +199,32 @@ pub fn get_value(
         }
         Function::ConcatWs => Ok(Variant::from_string(&function_args.join(&function_arg))),
         Function::Locate => {
+            if function_args.is_empty() {
+                return Err("LOCATE requires a search substring argument".to_string());
+            }
             let string = String::from(&function_arg);
             let substring = &function_args[0];
+            let original_length = string.chars().count();
             let pos: i32 = match &function_args.get(1) {
-                Some(pos) => pos.parse::<i32>().unwrap() - 1,
+                Some(pos) => match pos.parse::<i32>() {
+                    Ok(p) => p.saturating_sub(1).max(0),
+                    Err(_) => return Err(format!("Could not parse position argument of LOCATE function: {}", pos)),
+                },
                 _ => 0,
             };
-            let string = string.chars().skip(pos as usize).collect::<String>();
+
+            if pos as usize > original_length {
+                return Ok(Variant::from_int(0));
+            }
+
+            let string: String = string.chars().skip(pos as usize).collect();
 
             let result = string
                 .find(substring)
-                .map(|index| index as i64 + pos as i64 + 1)
+                .map(|byte_index| {
+                    let char_index = string[..byte_index].chars().count();
+                    char_index as i64 + pos as i64 + 1
+                })
                 .unwrap_or(0);
 
             Ok(Variant::from_int(result))
@@ -627,32 +232,44 @@ pub fn get_value(
         Function::Substring => {
             let string = String::from(&function_arg);
 
-            let mut pos: i32 = match &function_args.is_empty() {
+            let pos: i32 = match &function_args.is_empty() {
                 true => 0,
-                false => *&function_args[0].parse::<i32>().unwrap() - 1,
+                false => match function_args[0].parse::<i32>() {
+                    Ok(p) if p < 0 => {
+                        let string_length = string.chars().count() as i32;
+                        (string_length + p).max(0)
+                    }
+                    Ok(p) => (p - 1).max(0),
+                    Err(_) => return Err(format!("Could not parse position argument of SUBSTRING function: {}", function_args[0])),
+                },
             };
 
-            if pos < 0 {
-                let string_length = string.chars().count() as i32;
-                pos = string_length - pos.abs() + 1;
-            }
-
-            let len = match &function_args.get(1) {
-                Some(len) => len.parse::<usize>().unwrap(),
-                _ => 0,
+            let len: Option<usize> = match &function_args.get(1) {
+                Some(len) => match len.parse::<usize>() {
+                    Ok(l) => Some(l),
+                    Err(_) => return Err(format!("Could not parse length argument of SUBSTRING function: {}", len)),
+                },
+                _ => None,
             };
 
-            let result = match len > 0 {
-                true => string.chars().skip(pos as usize).take(len).collect(),
-                false => string.chars().skip(pos as usize).collect(),
+            let result: String = match len {
+                Some(l) => string.chars().skip(pos as usize).take(l).collect(),
+                None => string.chars().skip(pos as usize).collect(),
             };
 
             Ok(Variant::from_string(&result))
         }
         Function::Replace => {
+            if function_args.len() < 2 {
+                return Err("REPLACE requires two arguments: search string and replacement string".to_string());
+            }
             let source = function_arg;
             let from = &function_args[0];
             let to = &function_args[1];
+
+            if from.is_empty() {
+                return Ok(Variant::from_string(&source));
+            }
 
             let result = source.replace(from, to);
 
@@ -689,16 +306,24 @@ pub fn get_value(
             match function_arg.parse::<f64>() {
                 Ok(val) => {
                     let power = match function_args.first() {
-                        Some(power) => power.parse::<f64>().unwrap(),
+                        Some(power) => match power.parse::<f64>() {
+                            Ok(p) => p,
+                            Err(_) => return Err(format!("Could not parse exponent argument of POWER function: {}", power)),
+                        },
                         _ => 0.0,
                     };
 
-                    Ok(Variant::from_float(val.powf(power)))
+                    let result = val.powf(power);
+                    if result.is_nan() || result.is_infinite() {
+                        return Err(format!("POWER({}, {}) produces a non-finite result", val, power));
+                    }
+                    Ok(Variant::from_float(result))
                 }
                 _ => Ok(Variant::empty(VariantType::String)),
             }
         }
         Function::Sqrt => match function_arg.parse::<f64>() {
+            Ok(val) if val < 0.0 => Err(format!("SQRT of a negative number: {}", val)),
             Ok(val) => Ok(Variant::from_float(val.sqrt())),
             _ => Ok(Variant::empty(VariantType::String)),
         },
@@ -706,9 +331,19 @@ pub fn get_value(
             match function_arg.parse::<f64>() {
                 Ok(val) => {
                     let base = match function_args.first() {
-                        Some(base) => base.parse::<f64>().unwrap(),
+                        Some(base) => match base.parse::<f64>() {
+                            Ok(b) => b,
+                            Err(_) => return Err(format!("Could not parse base argument of LOG function: {}", base)),
+                        },
                         _ => 10.0,
                     };
+
+                    if val <= 0.0 {
+                        return Err(format!("LOG of a non-positive number: {}", val));
+                    }
+                    if base <= 0.0 || base == 1.0 {
+                        return Err(format!("LOG with invalid base: {}", base));
+                    }
 
                     Ok(Variant::from_float(val.log(base)))
                 }
@@ -716,24 +351,37 @@ pub fn get_value(
             }
         }
         Function::Ln => match function_arg.parse::<f64>() {
+            Ok(val) if val <= 0.0 => Err(format!("LN of a non-positive number: {}", val)),
             Ok(val) => Ok(Variant::from_float(val.ln())),
             _ => Ok(Variant::empty(VariantType::String)),
         }
         Function::Exp => match function_arg.parse::<f64>() {
-            Ok(val) => Ok(Variant::from_float(val.exp())),
+            Ok(val) => {
+                let result = val.exp();
+                if result.is_infinite() {
+                    return Err(format!("EXP({}) overflows to infinity", val));
+                }
+                Ok(Variant::from_float(result))
+            }
             _ => Ok(Variant::empty(VariantType::String)),
         }
         Function::Least => {
             match function_arg.parse::<f64>() {
                 Ok(val) => {
-                    let mut least = val;
+                    let mut least = if val.is_finite() { val } else { f64::INFINITY };
                     for arg in function_args {
                         if let Ok(val) = arg.parse::<f64>() {
-                            least = least.min(val);
+                            if val.is_finite() {
+                                least = least.min(val);
+                            }
                         }
                     }
 
-                    Ok(Variant::from_float(least))
+                    if least.is_finite() {
+                        Ok(Variant::from_float(least))
+                    } else {
+                        Ok(Variant::empty(VariantType::String))
+                    }
                 }
                 _ => Ok(Variant::empty(VariantType::String)),
             }
@@ -741,14 +389,20 @@ pub fn get_value(
         Function::Greatest => {
             match function_arg.parse::<f64>() {
                 Ok(val) => {
-                    let mut greatest = val;
+                    let mut greatest = if val.is_finite() { val } else { f64::NEG_INFINITY };
                     for arg in function_args {
                         if let Ok(val) = arg.parse::<f64>() {
-                            greatest = greatest.max(val);
+                            if val.is_finite() {
+                                greatest = greatest.max(val);
+                            }
                         }
                     }
 
-                    Ok(Variant::from_float(greatest))
+                    if greatest.is_finite() {
+                        Ok(Variant::from_float(greatest))
+                    } else {
+                        Ok(Variant::empty(VariantType::String))
+                    }
                 }
                 _ => Ok(Variant::empty(VariantType::String)),
             }
@@ -765,7 +419,24 @@ pub fn get_value(
             _ => Ok(Variant::empty(VariantType::String)),
         },
         Function::Round => match function_arg.parse::<f64>() {
-            Ok(val) => Ok(Variant::from_float(val.round())),
+            Ok(val) => {
+                let precision: i32 = match function_args.first() {
+                    Some(p) => match p.parse::<i32>() {
+                        Ok(p) => p,
+                        Err(_) => return Err(format!("Could not parse precision argument of ROUND function: {}", p)),
+                    },
+                    _ => 0,
+                };
+                let factor = 10_f64.powi(precision);
+                let result = (val * factor).round() / factor;
+                if result.is_finite() {
+                    Ok(Variant::from_float(result))
+                } else if precision >= 0 {
+                    Ok(Variant::from_float(val))
+                } else {
+                    Ok(Variant::from_float(0.0))
+                }
+            }
             _ => Ok(Variant::empty(VariantType::String)),
         },
 
@@ -813,9 +484,12 @@ pub fn get_value(
                 return Ok(Variant::empty(VariantType::String));
             }
 
-            let seconds = function_arg.parse::<u64>().unwrap();
-            let formatted = Duration::from_secs(seconds).to_human_time_string();
-            Ok(Variant::from_string(&formatted))
+            if let Ok(seconds) = function_arg.parse::<u64>() {
+                let formatted = Duration::from_secs(seconds).to_human_time_string();
+                return Ok(Variant::from_string(&formatted));
+            }
+
+            Ok(Variant::empty(VariantType::String))
         }
 
         // ===== Datetime functions =====
@@ -847,7 +521,7 @@ pub fn get_value(
             Ok(date) => Ok(Variant::from_int(date.0.weekday().number_from_sunday() as i64)),
             _ => Ok(Variant::empty(VariantType::Int)),
         },
-    
+
         #[cfg(all(unix, feature = "users"))]
         Function::CurrentUid => Ok(Variant::from_int(uzers::get_current_uid() as i64)),
         #[cfg(all(unix, feature = "users"))]
@@ -1074,11 +748,21 @@ pub fn get_value(
             match function_arg.parse::<i64>() {
                 Ok(val) => {
                     if function_args.is_empty() {
-                        Ok(Variant::from_int(rng.random_range(0..val)))
+                        if val <= 0 {
+                            Ok(Variant::from_int(0))
+                        } else {
+                            Ok(Variant::from_int(rng.random_range(0..=val)))
+                        }
                     } else {
                         let limit = function_args.first().unwrap();
                         match limit.parse::<i64>() {
-                            Ok(limit) => Ok(Variant::from_int(rng.random_range(val..limit))),
+                            Ok(limit) => {
+                                if val >= limit {
+                                    Ok(Variant::from_int(val))
+                                } else {
+                                    Ok(Variant::from_int(rng.random_range(val..=limit)))
+                                }
+                            }
                             _ => Err(format!(
                                 "Could not parse limit argument of RANDOM function: {}",
                                 limit
@@ -1114,41 +798,70 @@ pub fn get_aggregate_value(
 ) -> String {
     match function {
         Function::Min => {
-            let min = raw_output_buffer
+            match raw_output_buffer
                 .iter()
-                .filter_map(|item| item.get(&buffer_key)) // Get the value from the buffer
-                .filter_map(|value| value.parse::<i64>().ok()) // Parse the value and filter out errors
-                .min()
-                .unwrap_or(0); // If no items were found
-
-            min.to_string()
+                .filter_map(|item| item.get(&buffer_key))
+                .filter_map(|value| value.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .reduce(f64::min)
+            {
+                Some(min) => (min + 0.0).to_string(),
+                None => String::new(),
+            }
         }
         Function::Max => {
-            let max = raw_output_buffer
+            match raw_output_buffer
                 .iter()
-                .filter_map(|item| item.get(&buffer_key)) // Get the values from the buffer
-                .filter_map(|value| value.parse::<i64>().ok()) // Parse the value and filter out errors
-                .max()
-                .unwrap_or(0); // If no items were found
-
-            max.to_string()
+                .filter_map(|item| item.get(&buffer_key))
+                .filter_map(|value| value.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .reduce(f64::max)
+            {
+                Some(max) => (max + 0.0).to_string(),
+                None => String::new(),
+            }
         }
         Function::Avg => {
             if raw_output_buffer.is_empty() {
-                return String::from("0");
+                return String::new();
             }
 
-            get_mean(raw_output_buffer, &buffer_key).to_string()
+            let n = get_parseable_count(raw_output_buffer, &buffer_key);
+            if n == 0 {
+                return String::new();
+            }
+
+            let mean = get_mean(raw_output_buffer, &buffer_key);
+            if !mean.is_finite() {
+                return String::new();
+            }
+            mean.to_string()
         }
-        Function::Sum => get_buffer_sum(raw_output_buffer, &buffer_key).to_string(),
+        Function::Sum => {
+            let n = get_parseable_count(raw_output_buffer, &buffer_key);
+            if n == 0 {
+                return String::new();
+            }
+            let sum = get_buffer_sum(raw_output_buffer, &buffer_key);
+            if !sum.is_finite() {
+                return String::new();
+            }
+            sum.to_string()
+        }
         Function::Count => raw_output_buffer.len().to_string(),
         Function::StdDevPop => {
             if raw_output_buffer.is_empty() {
                 return String::new();
             }
 
-            let n = raw_output_buffer.len();
+            let n = get_parseable_count(raw_output_buffer, &buffer_key);
+            if n == 0 {
+                return String::new();
+            }
             let variance = get_variance(raw_output_buffer, &buffer_key, n);
+            if !variance.is_finite() {
+                return String::new();
+            }
             let result = variance.sqrt();
 
             result.to_string()
@@ -1158,9 +871,14 @@ pub fn get_aggregate_value(
                 return String::new();
             }
 
-            let size = raw_output_buffer.len();
-            let n = if size == 1 { 1 } else { size - 1 };
-            let variance = get_variance(raw_output_buffer, &buffer_key, n);
+            let size = get_parseable_count(raw_output_buffer, &buffer_key);
+            if size <= 1 {
+                return String::new();
+            }
+            let variance = get_variance(raw_output_buffer, &buffer_key, size - 1);
+            if !variance.is_finite() {
+                return String::new();
+            }
             let result = variance.sqrt();
 
             result.to_string()
@@ -1170,8 +888,14 @@ pub fn get_aggregate_value(
                 return String::new();
             }
 
-            let n = raw_output_buffer.len();
+            let n = get_parseable_count(raw_output_buffer, &buffer_key);
+            if n == 0 {
+                return String::new();
+            }
             let variance = get_variance(raw_output_buffer, &buffer_key, n);
+            if !variance.is_finite() {
+                return String::new();
+            }
 
             variance.to_string()
         }
@@ -1180,9 +904,14 @@ pub fn get_aggregate_value(
                 return String::new();
             }
 
-            let size = raw_output_buffer.len();
-            let n = if size == 1 { 1 } else { size - 1 };
-            let variance = get_variance(raw_output_buffer, &buffer_key, n);
+            let size = get_parseable_count(raw_output_buffer, &buffer_key);
+            if size <= 1 {
+                return String::new();
+            }
+            let variance = get_variance(raw_output_buffer, &buffer_key, size - 1);
+            if !variance.is_finite() {
+                return String::new();
+            }
 
             variance.to_string()
         }
@@ -1194,8 +923,421 @@ pub fn get_aggregate_value(
     }
 }
 
+functions! {
+    #[group_order = ["String", "Japanese string", "Numeric", "Datetime", "Aggregate", "Xattr", "Other"]]
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
+    pub enum Function {
+        #[text = ["lower", "lowercase", "lcase"]]
+        @group = "String"
+        @description = "Convert the value to lowercase"
+        Lower,
+
+        #[text = ["upper", "uppercase", "ucase"]]
+        @group = "String"
+        @description = "Convert the value to UPPERCASE"
+        Upper,
+
+        #[text = ["initcap"]]
+        @group = "String"
+        @description = "Capitalize the first letter of each word (Title Case)"
+        InitCap,
+
+        #[text = ["length", "len"], data_type = "numeric"]
+        @group = "String"
+        @description = "Get the length of the string"
+        Length,
+
+        #[text = ["to_base64", "base64"]]
+        @group = "String"
+        @description = "Convert the value to base64"
+        ToBase64,
+
+        #[text = ["from_base64"]]
+        @group = "String"
+        @description = "Read the value as base64"
+        FromBase64,
+
+        #[text = ["concat"]]
+        @group = "String"
+        @description = "Concatenate the value with the arguments"
+        Concat,
+
+        #[text = ["concat_ws"]]
+        @group = "String"
+        @description = "Concatenate the arguments, separated by the value"
+        ConcatWs,
+
+        #[text = ["locate", "position"], data_type = "numeric"]
+        @group = "String"
+        @description = "Get the position of a substring in the value"
+        Locate,
+
+        #[text = ["substr", "substring"]]
+        @group = "String"
+        @description = "Get a substring of the value, from a position and length"
+        Substring,
+
+        #[text = ["replace"]]
+        @group = "String"
+        @description = "Replace a substring in the value with another string"
+        Replace,
+
+        #[text = ["trim"]]
+        @group = "String"
+        @description = "Trim whitespace from the value"
+        Trim,
+
+        #[text = ["ltrim"]]
+        @group = "String"
+        @description = "Trim whitespace from the start of the value"
+        LTrim,
+
+        #[text = ["rtrim"]]
+        @group = "String"
+        @description = "Trim whitespace from the end of the value"
+        RTrim,
+
+        #[text = ["bin"]]
+        @group = "Numeric"
+        @description = "Get the binary representation of the value"
+        Bin,
+
+        #[text = ["hex"]]
+        @group = "Numeric"
+        @description = "Get the hexadecimal representation of the value"
+        Hex,
+
+        #[text = ["oct"]]
+        @group = "Numeric"
+        @description = "Get the octal representation of the value"
+        Oct,
+
+        #[text = ["abs"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the absolute value of the number"
+        Abs,
+
+        #[text = ["power", "pow"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Raise the value to the power of another value"
+        Power,
+
+        #[text = ["sqrt"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the square root of the value"
+        Sqrt,
+
+        #[text = ["log"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the logarithm of the value with a specific base"
+        Log,
+
+        #[text = ["ln"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the natural logarithm of the value"
+        Ln,
+
+        #[text = ["exp"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get e raised to the power of the specified number"
+        Exp,
+
+        #[text = ["least"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the smallest value"
+        Least,
+
+        #[text = ["greatest"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Get the largest value"
+        Greatest,
+
+        #[text = ["pi"], data_type = "numeric"]
+        @weight = 1
+        @group = "Numeric"
+        @description = "Get the value of Pi (π)"
+        Pi,
+
+        #[text = ["floor"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Round down to the nearest integer"
+        Floor,
+
+        #[text = ["ceil", "ceiling"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Round up to the nearest integer"
+        Ceil,
+
+        #[text = ["round"], data_type = "numeric"]
+        @group = "Numeric"
+        @description = "Round to the nearest integer, or to a given number of decimal places"
+        Round,
+
+        #[text = ["contains_japanese", "japanese"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Japanese characters"
+        ContainsJapanese,
+
+        #[text = ["contains_hiragana", "hiragana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Hiragana characters"
+        ContainsHiragana,
+
+        #[text = ["contains_katakana", "katakana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Katakana characters"
+        ContainsKatakana,
+
+        #[text = ["contains_kana", "kana"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Kana characters"
+        ContainsKana,
+
+        #[text = ["contains_kanji", "kanji"], data_type = "boolean"]
+        @group = "Japanese string"
+        @description = "Check if the string contains Kanji characters"
+        ContainsKanji,
+
+        #[text = ["contains_greek", "greek"], data_type = "boolean"]
+        @group = "Greek string"
+        @description = "Check if the string contains Greek characters"
+        ContainsGreek,
+
+        #[text = ["format_size", "format_filesize"]]
+        @group = "Other"
+        @description = "Format a file size in human-readable format"
+        FormatSize,
+
+        #[text = ["format_time", "pretty_time"]]
+        @group = "Other"
+        @description = "Format a time duration in human-readable format"
+        FormatTime,
+
+        #[text = ["current_date", "cur_date", "curdate"]]
+        @weight = 1
+        @group = "Datetime"
+        @description = "Get the current date"
+        CurrentDate,
+
+        #[text = ["current_time", "cur_time", "curtime"]]
+        @weight = 1
+        @group = "Datetime"
+        @description = "Get the current time (HH:MM:SS)"
+        CurrentTime,
+
+        #[text = ["current_timestamp", "now"]]
+        @weight = 1
+        @group = "Datetime"
+        @description = "Get the current timestamp (YYYY-MM-DD HH:MM:SS)"
+        CurrentTimestamp,
+
+        #[text = ["day"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the day from a date"
+        Day,
+
+        #[text = ["month"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the month from a date"
+        Month,
+
+        #[text = ["year"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the year from a date"
+        Year,
+
+        #[text = ["dayofweek", "dow"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Get the day of the week from a date"
+        DayOfWeek,
+
+        #[text = ["current_uid"], data_type = "numeric"]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current user ID"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentUid,
+
+        #[text = ["current_user"]]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current username"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentUser,
+
+        #[text = ["current_gid"], data_type = "numeric"]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current group ID"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentGid,
+
+        #[text = ["current_group"]]
+        @weight = 1
+        @group = "Other"
+        @description = "Get the current group name"
+        #[cfg(all(unix, feature = "users"))]
+        CurrentGroup,
+
+        #[text = ["contains"], data_type = "boolean"]
+        @weight = 1024
+        @group = "Other"
+        @description = "Checks if a file contains a substring"
+        Contains,
+
+        #[text = ["has_xattr"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has a specific extended attribute"
+        #[cfg(unix)]
+        HasXattr,
+
+        #[text = ["xattr"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get the value of an extended attribute"
+        #[cfg(unix)]
+        Xattr,
+
+        #[text = ["has_extattr"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has a specific extended file attribute flag"
+        #[cfg(target_os = "linux")]
+        HasExtattr,
+
+        #[text = ["acl"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get all POSIX ACL entries in standard form"
+        #[cfg(target_os = "linux")]
+        Acl,
+
+        #[text = ["has_acl_entry"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if a specific POSIX ACL entry exists"
+        #[cfg(target_os = "linux")]
+        HasAclEntry,
+
+        #[text = ["acl_entry"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get permissions of a specific POSIX ACL entry"
+        #[cfg(target_os = "linux")]
+        AclEntry,
+
+        #[text = ["default_acl"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get all default POSIX ACL entries in standard form"
+        #[cfg(target_os = "linux")]
+        DefaultAcl,
+
+        #[text = ["has_default_acl_entry"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if a specific default POSIX ACL entry exists"
+        #[cfg(target_os = "linux")]
+        HasDefaultAclEntry,
+
+        #[text = ["default_acl_entry"]]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Get permissions of a specific default POSIX ACL entry"
+        #[cfg(target_os = "linux")]
+        DefaultAclEntry,
+
+        #[text = ["has_capabilities", "has_caps"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has capabilities (security.capability xattr)"
+        #[cfg(target_os = "linux")]
+        HasCapabilities,
+
+        #[text = ["has_capability", "has_cap"], data_type = "boolean"]
+        @weight = 2
+        @group = "Xattr"
+        @description = "Check if the file has a specific capability (security.capability xattr)"
+        #[cfg(target_os = "linux")]
+        HasCapability,
+
+        #[text = ["coalesce"]]
+        @group = "Other"
+        @description = "Return the first non-empty value"
+        Coalesce,
+
+        #[text = ["rand", "random"], data_type = "numeric"]
+        @weight = 1
+        @group = "Numeric"
+        @description = "Gets a random number from 0 to the value, or between two values"
+        Random,
+
+        #[text = ["min"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the minimum value"
+        Min,
+
+        #[text = ["max"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the maximum value"
+        Max,
+
+        #[text = ["avg"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the average value"
+        Avg,
+
+        #[text = ["sum"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sum of all values"
+        Sum,
+
+        #[text = ["count"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the number of values"
+        Count,
+
+        #[text = ["stddev_pop", "stddev", "std"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the population standard deviation"
+        StdDevPop,
+
+        #[text = ["stddev_samp"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sample standard deviation"
+        StdDevSamp,
+
+        #[text = ["var_pop", "variance"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the population variance"
+        VarPop,
+
+        #[text = ["var_samp"], data_type = "numeric"]
+        @is_aggregate = true
+        @group = "Aggregate"
+        @description = "Get the sample variance"
+        VarSamp,
+    }
+}
+
+fn get_parseable_count(raw_output_buffer: &Vec<HashMap<String, String>>, buffer_key: &String) -> usize {
+    raw_output_buffer
+        .iter()
+        .filter(|item| item.get(buffer_key).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).is_some())
+        .count()
+}
+
 /// Get the variance of all values in the buffer, based on the buffer key.
-/// If the value can't be parsed as usize, it will be ignored.
+/// If the value can't be parsed as f64, it will be ignored.
 fn get_variance(
     raw_output_buffer: &Vec<HashMap<String, String>>,
     buffer_key: &String,
@@ -1203,35 +1345,39 @@ fn get_variance(
 ) -> f64 {
     let avg = get_mean(raw_output_buffer, buffer_key);
 
-    let mut result: f64 = 0.0;
+    let mut sum_sq: f64 = 0.0;
     for value in raw_output_buffer {
         if let Some(value) = value.get(buffer_key) {
             if let Ok(value) = value.parse::<f64>() {
-                result += (avg - value).powi(2) / n as f64;
+                if value.is_finite() {
+                    sum_sq += (avg - value).powi(2);
+                }
             }
         }
     }
 
-    result
+    if n == 0 { 0.0 } else { sum_sq / n as f64 }
 }
 
 /// Get the mean of all values in the buffer, based on the buffer key.
 /// If the value can't be parsed as usize, it will be ignored.
 fn get_mean(raw_output_buffer: &Vec<HashMap<String, String>>, buffer_key: &String) -> f64 {
     let sum = get_buffer_sum(raw_output_buffer, buffer_key);
-    let size = raw_output_buffer.len();
+    let count = get_parseable_count(raw_output_buffer, buffer_key);
 
-    (sum / size) as f64
+    if count == 0 { 0.0 } else { sum / count as f64 }
 }
 
 /// Get the sum of all values in the buffer, based on the buffer key.
-/// If the value can't be parsed as usize, it will be ignored.
-fn get_buffer_sum(raw_output_buffer: &Vec<HashMap<String, String>>, buffer_key: &String) -> usize {
-    let mut sum = 0;
+/// If the value can't be parsed as f64, it will be ignored.
+fn get_buffer_sum(raw_output_buffer: &Vec<HashMap<String, String>>, buffer_key: &String) -> f64 {
+    let mut sum: f64 = 0.0;
     for value in raw_output_buffer {
         if let Some(value) = value.get(buffer_key) {
-            if let Ok(value) = value.parse::<usize>() {
-                sum += value;
+            if let Ok(value) = value.parse::<f64>() {
+                if value.is_finite() {
+                    sum += value;
+                }
             }
         }
     }
@@ -1793,5 +1939,941 @@ mod tests {
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
         assert_eq!(result.unwrap().to_string(), "hello");
+    }
+
+    fn make_buffer(key: &str, values: &[&str]) -> Vec<HashMap<String, String>> {
+        values.iter().map(|v| {
+            let mut m = HashMap::new();
+            m.insert(key.to_string(), v.to_string());
+            m
+        }).collect()
+    }
+
+    #[test]
+    fn avg_truncates_to_integer() {
+        let buffer = make_buffer("size", &["3", "4"]);
+        let result = get_aggregate_value(&Function::Avg, &buffer, "size".to_string(), &None);
+        assert_eq!(result, "3.5");
+    }
+
+    #[test]
+    fn sum_ignores_negative_values() {
+        let buffer = make_buffer("val", &["-5", "10"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "5");
+    }
+
+    #[test]
+    fn locate_wrong_position_for_multibyte() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("aéb"),
+            vec![String::from("b")],
+            None,
+            &None,
+        ).unwrap();
+        assert_eq!(result.to_int(), 3);
+    }
+
+    #[test]
+    fn initcap_collapses_multiple_spaces() {
+        let result = get_value(
+            &Function::InitCap,
+            String::from("hello  world"),
+            vec![],
+            None,
+            &None,
+        ).unwrap();
+        assert_eq!(result.to_string(), "Hello  World");
+    }
+
+    #[test]
+    fn initcap_destroys_tab_separator() {
+        let result = get_value(
+            &Function::InitCap,
+            String::from("hello\tworld"),
+            vec![],
+            None,
+            &None,
+        ).unwrap();
+        assert_eq!(result.to_string(), "Hello\tWorld");
+    }
+
+    #[test]
+    fn min_drops_fractional_values() {
+        let buffer = make_buffer("val", &["1.5", "2.5"]);
+        let result = get_aggregate_value(&Function::Min, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "1.5");
+    }
+
+    #[test]
+    fn max_drops_fractional_values() {
+        let buffer = make_buffer("val", &["1.5", "2.5"]);
+        let result = get_aggregate_value(&Function::Max, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "2.5");
+    }
+
+    #[test]
+    fn sum_drops_fractional_values() {
+        let buffer = make_buffer("val", &["1.5", "2.5"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "4");
+    }
+
+    #[test]
+    fn avg_wrong_with_unparseable_entries() {
+        let mut buffer = make_buffer("val", &["10", "20"]);
+        let mut extra = HashMap::new();
+        extra.insert("other_key".to_string(), "999".to_string());
+        buffer.push(extra);
+        let result = get_aggregate_value(&Function::Avg, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "15");
+    }
+
+    #[test]
+    fn variance_wrong_with_unparseable_entries() {
+        let mut buffer = make_buffer("val", &["10", "20"]);
+        let mut extra = HashMap::new();
+        extra.insert("other_key".to_string(), "999".to_string());
+        buffer.push(extra);
+        let result = get_aggregate_value(&Function::VarPop, &buffer, "val".to_string(), &None);
+        let var: f64 = result.parse().unwrap();
+        assert!((var - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn format_time_panics_on_non_numeric() {
+        let result = get_value(
+            &Function::FormatTime,
+            String::from("abc"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn random_panics_on_zero_upper_bound() {
+        let result = get_value(
+            &Function::Random,
+            String::from("0"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn random_panics_on_inverted_range() {
+        let result = get_value(
+            &Function::Random,
+            String::from("5"),
+            vec![String::from("3")],
+            None,
+            &None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn power_errors_on_non_numeric_exponent() {
+        let result = get_value(
+            &Function::Power,
+            String::from("2"),
+            vec![String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn log_errors_on_non_numeric_base() {
+        let result = get_value(
+            &Function::Log,
+            String::from("100"),
+            vec![String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn locate_errors_on_non_numeric_position() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from("l"), String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn substring_errors_on_non_numeric_position() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn substring_errors_on_non_numeric_length() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("1"), String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sqrt_negative_returns_error() {
+        let result = get_value(
+            &Function::Sqrt,
+            String::from("-1"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ln_zero_returns_error() {
+        let result = get_value(
+            &Function::Ln,
+            String::from("0"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ln_negative_returns_error() {
+        let result = get_value(
+            &Function::Ln,
+            String::from("-1"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn log_base_one_returns_error() {
+        let result = get_value(
+            &Function::Log,
+            String::from("100"),
+            vec![String::from("1")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn log_negative_value_returns_error() {
+        let result = get_value(
+            &Function::Log,
+            String::from("-1"),
+            vec![String::from("10")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn power_negative_base_fractional_exp_returns_error() {
+        let result = get_value(
+            &Function::Power,
+            String::from("-2"),
+            vec![String::from("0.5")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn power_zero_base_negative_exp_returns_error() {
+        let result = get_value(
+            &Function::Power,
+            String::from("0"),
+            vec![String::from("-1")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn locate_no_search_arg_returns_error() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn replace_missing_args_returns_error() {
+        let result = get_value(
+            &Function::Replace,
+            String::from("hello"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn replace_missing_to_arg_returns_error() {
+        let result = get_value(
+            &Function::Replace,
+            String::from("hello"),
+            vec![String::from("l")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn exp_overflow_returns_error() {
+        let result = get_value(
+            &Function::Exp,
+            String::from("710"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn substring_very_negative_pos_clamps() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("-100"), String::from("3")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "hel");
+    }
+
+    #[test]
+    fn locate_position_zero_finds_match() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from("h"), String::from("0")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "1");
+    }
+
+    #[test]
+    fn substring_position_zero_with_length() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("0"), String::from("3")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "hel");
+    }
+
+    #[test]
+    fn substring_position_zero_without_length() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("0")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "hello");
+    }
+
+    #[test]
+    fn var_samp_single_value_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("5"))]),
+        ];
+        let result = get_aggregate_value(&Function::VarSamp, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn stddev_samp_single_value_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("5"))]),
+        ];
+        let result = get_aggregate_value(&Function::StdDevSamp, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn var_pop_no_parseable_values_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("abc"))]),
+            HashMap::from([(String::from("val"), String::from("def"))]),
+        ];
+        let result = get_aggregate_value(&Function::VarPop, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn min_no_parseable_values_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("abc"))]),
+            HashMap::from([(String::from("val"), String::from("def"))]),
+        ];
+        let result = get_aggregate_value(&Function::Min, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn max_no_parseable_values_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("abc"))]),
+            HashMap::from([(String::from("val"), String::from("def"))]),
+        ];
+        let result = get_aggregate_value(&Function::Max, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn avg_no_parseable_values_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("abc"))]),
+            HashMap::from([(String::from("val"), String::from("def"))]),
+        ];
+        let result = get_aggregate_value(&Function::Avg, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn initcap_hyphenated_words() {
+        let result = get_value(
+            &Function::InitCap,
+            String::from("hello-world"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "Hello-World");
+    }
+
+    #[test]
+    fn initcap_underscore_words() {
+        let result = get_value(
+            &Function::InitCap,
+            String::from("foo_bar_baz"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "Foo_Bar_Baz");
+    }
+
+    #[test]
+    fn substring_explicit_length_zero() {
+        let result = get_value(
+            &Function::Substring,
+            String::from("hello"),
+            vec![String::from("2"), String::from("0")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn replace_empty_search_returns_original() {
+        let result = get_value(
+            &Function::Replace,
+            String::from("hello"),
+            vec![String::from(""), String::from("x")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "hello");
+    }
+
+    #[test]
+    fn ceil_negative_fractional_not_negative_zero() {
+        let result = get_value(
+            &Function::Ceil,
+            String::from("-0.1"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "0");
+    }
+
+    #[test]
+    fn round_negative_fractional_not_negative_zero() {
+        let result = get_value(
+            &Function::Round,
+            String::from("-0.4"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "0");
+    }
+
+    #[test]
+    fn round_with_precision_two() {
+        let result = get_value(
+            &Function::Round,
+            String::from("3.14159"),
+            vec![String::from("2")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 3.14);
+    }
+
+    #[test]
+    fn round_with_precision_zero() {
+        let result = get_value(
+            &Function::Round,
+            String::from("3.7"),
+            vec![String::from("0")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 4.0);
+    }
+
+    #[test]
+    fn round_with_negative_precision() {
+        let result = get_value(
+            &Function::Round,
+            String::from("1234"),
+            vec![String::from("-2")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 1200.0);
+    }
+
+    #[test]
+    fn round_with_precision_no_arg_defaults_to_integer() {
+        let result = get_value(
+            &Function::Round,
+            String::from("3.14159"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 3.0);
+    }
+
+    #[test]
+    fn round_with_invalid_precision_returns_error() {
+        let result = get_value(
+            &Function::Round,
+            String::from("3.14"),
+            vec![String::from("abc")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn round_very_large_positive_precision() {
+        let result = get_value(
+            &Function::Round,
+            String::from("3.14"),
+            vec![String::from("309")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 3.14);
+    }
+
+    #[test]
+    fn round_very_large_negative_precision() {
+        let result = get_value(
+            &Function::Round,
+            String::from("1234"),
+            vec![String::from("-400")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "0");
+    }
+
+    #[test]
+    fn round_large_value_moderate_precision() {
+        let result = get_value(
+            &Function::Round,
+            String::from("1e300"),
+            vec![String::from("20")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_float(), 1e300);
+    }
+
+    #[test]
+    fn floor_negative_zero_not_negative_zero() {
+        let result = get_value(
+            &Function::Floor,
+            String::from("-0.0"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "0");
+    }
+
+    #[test]
+    fn sqrt_negative_zero_not_negative_zero() {
+        let result = get_value(
+            &Function::Sqrt,
+            String::from("-0.0"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "0");
+    }
+
+    #[test]
+    fn abs_nan_string_returns_empty() {
+        let result = get_value(
+            &Function::Abs,
+            String::from("NaN"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn floor_nan_string_returns_empty() {
+        let result = get_value(
+            &Function::Floor,
+            String::from("NaN"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn ceil_inf_string_returns_empty() {
+        let result = get_value(
+            &Function::Ceil,
+            String::from("inf"),
+            vec![],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn random_upper_bound_is_inclusive() {
+        let mut saw_max = false;
+        for _ in 0..1000 {
+            let result = get_value(
+                &Function::Random,
+                String::from("1"),
+                vec![],
+                None,
+                &None,
+            );
+            let val = result.unwrap().to_int();
+            assert!(val >= 0 && val <= 1);
+            if val == 1 {
+                saw_max = true;
+            }
+        }
+        assert!(saw_max, "random(1) should be able to produce 1");
+    }
+
+    #[test]
+    fn random_range_upper_bound_is_inclusive() {
+        let mut saw_max = false;
+        for _ in 0..1000 {
+            let result = get_value(
+                &Function::Random,
+                String::from("5"),
+                vec![String::from("6")],
+                None,
+                &None,
+            );
+            let val = result.unwrap().to_int();
+            assert!(val >= 5 && val <= 6);
+            if val == 6 {
+                saw_max = true;
+            }
+        }
+        assert!(saw_max, "random(5, 6) should be able to produce 6");
+    }
+
+    #[test]
+    fn sum_no_parseable_values_is_empty() {
+        let buffer = vec![
+            HashMap::from([(String::from("val"), String::from("abc"))]),
+            HashMap::from([(String::from("val"), String::from("def"))]),
+        ];
+        let result = get_aggregate_value(&Function::Sum, &buffer, String::from("val"), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn sum_ignores_nan_string_values() {
+        let buffer = make_buffer("val", &["10", "NaN", "20"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "30");
+    }
+
+    #[test]
+    fn sum_ignores_inf_string_values() {
+        let buffer = make_buffer("val", &["10", "inf", "20"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "30");
+    }
+
+    #[test]
+    fn avg_ignores_nan_string_values() {
+        let buffer = make_buffer("val", &["10", "NaN", "20"]);
+        let result = get_aggregate_value(&Function::Avg, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "15");
+    }
+
+    #[test]
+    fn var_pop_ignores_nan_string_values() {
+        let buffer = make_buffer("val", &["10", "NaN", "20"]);
+        let result = get_aggregate_value(&Function::VarPop, &buffer, "val".to_string(), &None);
+        let var: f64 = result.parse().unwrap();
+        assert!((var - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn sum_all_nan_is_empty() {
+        let buffer = make_buffer("val", &["NaN", "NaN"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn min_ignores_nan_string_values() {
+        let buffer = make_buffer("val", &["10", "NaN", "5"]);
+        let result = get_aggregate_value(&Function::Min, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "5");
+    }
+
+    #[test]
+    fn max_ignores_nan_string_values() {
+        let buffer = make_buffer("val", &["10", "NaN", "5"]);
+        let result = get_aggregate_value(&Function::Max, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "10");
+    }
+
+    #[test]
+    fn greatest_ignores_inf_in_args() {
+        let result = get_value(
+            &Function::Greatest,
+            String::from("5"),
+            vec![String::from("inf"), String::from("10")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 10);
+    }
+
+    #[test]
+    fn greatest_ignores_inf_as_function_arg() {
+        let result = get_value(
+            &Function::Greatest,
+            String::from("inf"),
+            vec![String::from("5"), String::from("10")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 10);
+    }
+
+    #[test]
+    fn least_ignores_neg_inf_in_args() {
+        let result = get_value(
+            &Function::Least,
+            String::from("5"),
+            vec![String::from("-inf"), String::from("3")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 3);
+    }
+
+    #[test]
+    fn least_ignores_neg_inf_as_function_arg() {
+        let result = get_value(
+            &Function::Least,
+            String::from("-inf"),
+            vec![String::from("5"), String::from("3")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 3);
+    }
+
+    #[test]
+    fn greatest_all_non_finite_returns_empty() {
+        let result = get_value(
+            &Function::Greatest,
+            String::from("inf"),
+            vec![String::from("NaN")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn least_ignores_nan_in_args() {
+        let result = get_value(
+            &Function::Least,
+            String::from("5"),
+            vec![String::from("NaN"), String::from("3")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 3);
+    }
+
+    #[test]
+    fn min_negative_zero_normalized() {
+        let buffer = make_buffer("val", &["-0", "0"]);
+        let result = get_aggregate_value(&Function::Min, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "0");
+    }
+
+    #[test]
+    fn max_negative_zero_normalized() {
+        let buffer = make_buffer("val", &["-0", "0"]);
+        let result = get_aggregate_value(&Function::Max, &buffer, "val".to_string(), &None);
+        assert_eq!(result, "0");
+    }
+
+    #[test]
+    fn sum_overflow_returns_empty() {
+        let buffer = make_buffer("val", &["1e308", "1e308"]);
+        let result = get_aggregate_value(&Function::Sum, &buffer, "val".to_string(), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn avg_overflow_returns_empty() {
+        let buffer = make_buffer("val", &["1e308", "1e308"]);
+        let result = get_aggregate_value(&Function::Avg, &buffer, "val".to_string(), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn var_pop_overflow_returns_empty() {
+        let buffer = make_buffer("val", &["1e308", "-1e308"]);
+        let result = get_aggregate_value(&Function::VarPop, &buffer, "val".to_string(), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn stddev_pop_overflow_returns_empty() {
+        let buffer = make_buffer("val", &["1e308", "-1e308"]);
+        let result = get_aggregate_value(&Function::StdDevPop, &buffer, "val".to_string(), &None);
+        assert_eq!(result, String::new());
+    }
+
+    #[test]
+    fn locate_empty_substring_beyond_string_length() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from(""), String::from("100")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 0);
+    }
+
+    #[test]
+    fn locate_beyond_string_length_returns_zero() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from("o"), String::from("100")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 0);
+    }
+
+    #[test]
+    fn locate_empty_substring_at_end_plus_one() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from(""), String::from("6")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 6);
+    }
+
+    #[test]
+    fn locate_empty_substring_past_end_plus_one() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from(""), String::from("7")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 0);
+    }
+
+    #[test]
+    fn locate_i32_min_position_no_overflow() {
+        let result = get_value(
+            &Function::Locate,
+            String::from("hello"),
+            vec![String::from("l"), String::from("-2147483648")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 3);
     }
 }

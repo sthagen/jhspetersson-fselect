@@ -394,6 +394,9 @@ impl <'a> Parser<'a> {
                     }
                     _ => {
                         self.drop_lexeme();
+                        if mode != RootParsingMode::Unknown && mode != RootParsingMode::Options {
+                            return Err(String::from("Error parsing root options"));
+                        }
                         break;
                     }
                 },
@@ -548,7 +551,18 @@ impl <'a> Parser<'a> {
 
                     return match right {
                         Some(right) => {
-                            Ok(Some(Expr::logical_op(left.unwrap(), LogicalOp::And, right)))
+                            match left.as_ref().unwrap().weight <= right.weight {
+                                true => Ok(Some(Expr::logical_op(
+                                    left.unwrap(),
+                                    LogicalOp::And,
+                                    right,
+                                ))),
+                                false => Ok(Some(Expr::logical_op(
+                                    right,
+                                    LogicalOp::And,
+                                    left.unwrap(),
+                                ))),
+                            }
                         }
                         None => Ok(left),
                     };
@@ -744,7 +758,6 @@ impl <'a> Parser<'a> {
     fn parse_mul_div(&mut self) -> Result<Option<Expr>, String> {
         let mut left = self.parse_paren()?;
 
-        let mut op = None;
         loop {
             let lexeme = self.next_lexeme();
             if let Some(Lexeme::ArithmeticOperator(s)) = lexeme {
@@ -754,9 +767,6 @@ impl <'a> Parser<'a> {
                     | Some(ArithmeticOp::Divide)
                     | Some(ArithmeticOp::Modulo) => {
                         let expr = self.parse_paren()?;
-                        if op.is_none() {
-                            op = new_op.clone();
-                        }
 
                         left = match left {
                             Some(left) => {
@@ -916,11 +926,24 @@ impl <'a> Parser<'a> {
                 lexeme = self.next_lexeme();
             } else {
                 self.drop_lexeme();
+                return Err("Error parsing expression, expecting string".to_string());
             }
         }
 
         match lexeme {
-            Some(Lexeme::String(ref s)) | Some(Lexeme::RawString(ref s)) => {
+            Some(Lexeme::String(ref s)) => {
+                if let Ok((field, root_alias)) = Field::parse_field(s) {
+                    let mut expr = Expr::field_with_root_alias(field, root_alias);
+                    expr.minus = minus;
+                    return Ok(Some(expr));
+                }
+
+                let mut expr = Expr::value(s.to_string());
+                expr.minus = minus;
+
+                Ok(Some(expr))
+            }
+            Some(Lexeme::RawString(ref s)) => {
                 if let Ok((field, root_alias)) = Field::parse_field(s) {
                     let mut expr = Expr::field_with_root_alias(field, root_alias);
                     expr.minus = minus;
@@ -934,7 +957,7 @@ impl <'a> Parser<'a> {
                             expr.minus = minus;
                             return Ok(Some(expr));
                         }
-                        Err(err) => return Err(err),
+                        Err(_) => {}
                     }
                 }
 
@@ -968,6 +991,12 @@ impl <'a> Parser<'a> {
             if lexeme == Lexeme::CurlyOpen {
                 curly_mode = true;
             }
+        } else {
+            if is_boolean_function {
+                return Ok(function_expr);
+            }
+
+            return Err("Error in function expression".to_string());
         }
 
         if let Ok(Some(function_arg)) = self.parse_expr() {
@@ -1004,31 +1033,28 @@ impl <'a> Parser<'a> {
     fn parse_group_by(&mut self) -> Result<Vec<Expr>, String> {
         let mut group_by_fields: Vec<Expr> = vec![];
 
-        if let Some(Lexeme::RawString(s)) = self.next_lexeme() {
-            if s.to_lowercase() == "group" {
-                if let Some(Lexeme::By) = self.next_lexeme() {
-                    loop {
-                        match self.next_lexeme() {
-                            Some(Lexeme::Comma) => {}
-                            Some(Lexeme::RawString(_)) | Some(Lexeme::String(_)) => {
-                                self.drop_lexeme();
-                                match self.parse_expr()? {
-                                    Some(group_field) => group_by_fields.push(group_field),
-                                    None => break,
-                                }
-                            }
-                            _ => {
-                                self.drop_lexeme();
-                                break;
+        if let Some(Lexeme::Group) = self.next_lexeme() {
+            if let Some(Lexeme::By) = self.next_lexeme() {
+                loop {
+                    match self.next_lexeme() {
+                        Some(Lexeme::Comma) => {}
+                        Some(Lexeme::RawString(_)) | Some(Lexeme::String(_))
+                        | Some(Lexeme::Open) | Some(Lexeme::CurlyOpen) => {
+                            self.drop_lexeme();
+                            match self.parse_expr()? {
+                                Some(group_field) => group_by_fields.push(group_field),
+                                None => break,
                             }
                         }
+                        _ => {
+                            self.drop_lexeme();
+                            break;
+                        }
                     }
-                } else {
-                    self.drop_lexeme();
                 }
             } else {
                 self.drop_lexeme();
-            }            
+            }
         } else {
             self.drop_lexeme();
         }
@@ -1060,7 +1086,8 @@ impl <'a> Parser<'a> {
                             order_by_fields.push(actual_field);
                             order_by_directions.push(true);
                         }
-                        Some(Lexeme::String(_)) => {
+                        Some(Lexeme::String(_))
+                        | Some(Lexeme::Open) | Some(Lexeme::CurlyOpen) => {
                             self.drop_lexeme();
                             match self.parse_expr()? {
                                 Some(expr) => {
@@ -2390,9 +2417,9 @@ mod exists_tests {
         let expr = query.expr.unwrap();
         assert_eq!(expr.logical_op, Some(LogicalOp::Or));
         let left = expr.left.unwrap();
-        assert_eq!(left.op, Some(Op::Lte));
+        assert_eq!(left.op, Some(Op::Ne));
         let right = expr.right.unwrap();
-        assert_eq!(right.op, Some(Op::Ne));
+        assert_eq!(right.op, Some(Op::Lte));
     }
 
     #[test]
@@ -2548,6 +2575,189 @@ mod exists_tests {
         let mut p = Parser::new(&mut lexer);
         let result = p.parse(false);
         assert!(result.is_err() || result.as_ref().unwrap().fields.len() == 2);
+    }
+
+    #[test]
+    fn quoted_function_name_as_value_in_where() {
+        let query1 = "select name from /test where ext = 'upper' and size > 0";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let result1 = p1.parse(false);
+        assert!(result1.is_ok());
+
+        let query2 = "select name from /test where ext = 'lower' and size > 0";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let result2 = p2.parse(false);
+        assert!(result2.is_ok());
+    }
+
+    #[test]
+    fn quoted_function_name_as_value_produces_value_expr() {
+        let query = "select name from /test where ext = 'upper'";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        let expr = Expr::op(
+            Expr::field(Field::Extension),
+            Op::Eq,
+            Expr::value(String::from("upper")),
+        );
+        assert_eq!(query.expr, Some(expr));
+    }
+
+    #[test]
+    fn quoted_function_name_in_function_arg() {
+        let query = "select CONCAT(name, 'count') from /test limit 1";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_ok());
+        let query = result.unwrap();
+        assert_eq!(query.fields.len(), 1);
+    }
+
+    #[test]
+    fn and_reorders_by_weight_like_or() {
+        let query1 = "select name from /test where CONTAINS('foobar') and name like 'foobar'";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let q1 = p1.parse(false).unwrap();
+
+        let query2 = "select name from /test where name like 'foobar' and CONTAINS('foobar')";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let q2 = p2.parse(false).unwrap();
+
+        assert_eq!(q1.expr, q2.expr);
+    }
+
+    #[test]
+    fn depth_without_value_followed_by_keyword_should_error() {
+        let query = "select name from /test depth where size > 100";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mindepth_without_value_followed_by_keyword_should_error() {
+        let query = "select name from /test mindepth where size > 100";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn word_arithmetic_operator_does_not_double_drop() {
+        let query = "select name from /test where size > mul";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_ok());
+        let query = result.unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        let expr = query.expr.unwrap();
+        assert_eq!(expr.op, Some(Op::Gt));
+        let right = expr.right.unwrap();
+        assert_eq!(right.val, Some(String::from("mul")));
+    }
+
+    #[test]
+    fn group_by_parenthesized_expression() {
+        let query = "select count(*), (size) from /test group by (size)";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.grouping_fields, vec![Expr::field(Field::Size)]);
+    }
+
+    #[test]
+    fn group_by_parenthesized_arithmetic() {
+        let query1 = "select count(*), size from /test group by size + 1";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let q1 = p1.parse(false).unwrap();
+        assert!(!p1.there_are_remaining_lexemes());
+
+        let query2 = "select count(*), size from /test group by (size + 1)";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let q2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
+
+        assert_eq!(q1.grouping_fields, q2.grouping_fields);
+    }
+
+    #[test]
+    fn order_by_parenthesized_expression() {
+        let query1 = "select name, size from /test order by size";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let q1 = p1.parse(false).unwrap();
+        assert!(!p1.there_are_remaining_lexemes());
+
+        let query2 = "select name, size from /test order by (size)";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let q2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
+
+        assert_eq!(q1.ordering_fields, q2.ordering_fields);
+    }
+
+    #[test]
+    fn order_by_parenthesized_arithmetic_desc() {
+        let query = "select name, size from /test order by (size + 1) desc";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.ordering_fields.len(), 1);
+        assert_eq!(query.ordering_asc, vec![false]);
+        let expr = &query.ordering_fields[0];
+        assert!(expr.arithmetic_op.is_some());
+    }
+
+    #[test]
+    fn order_by_curly_braces_expression() {
+        let query1 = "select name, size from /test order by (size)";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let q1 = p1.parse(false).unwrap();
+        assert!(!p1.there_are_remaining_lexemes());
+
+        let query2 = "select name, size from /test order by {size}";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let q2 = p2.parse(false).unwrap();
+        assert!(!p2.there_are_remaining_lexemes());
+
+        assert_eq!(q1.ordering_fields, q2.ordering_fields);
+    }
+
+    #[test]
+    fn unquoted_function_name_as_value_fallback() {
+        let query = "select name from /test where name = upper";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_ok());
+        let query = result.unwrap();
+        assert!(!query.expr.is_none());
+
+        let expr = query.expr.unwrap();
+        assert_eq!(expr.op, Some(Op::Eq));
+        let right = expr.right.unwrap();
+        assert_eq!(right.val, Some(String::from("upper")));
     }
 
 }

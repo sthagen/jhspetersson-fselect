@@ -73,12 +73,8 @@ pub fn matches_dockerignore_filter(
     for dockerignore_filter in dockerignore_filters {
         let is_match = dockerignore_filter.regex.is_match(&file_name);
 
-        if is_match && dockerignore_filter.negate {
-            return false;
-        }
-
         if is_match {
-            matched = true;
+            matched = !dockerignore_filter.negate;
         }
     }
 
@@ -127,7 +123,7 @@ fn convert_dockerignore_pattern(
 
     let mut negate = false;
     if pattern.starts_with("!") {
-        pattern = pattern.replace("!", "");
+        pattern = pattern[1..].to_string();
         negate = true;
     }
 
@@ -175,7 +171,49 @@ fn convert_dockerignore_glob(glob: &str, file_path: &Path) -> Result<Regex, Stri
     #[cfg(not(windows))]
     let path = file_path.to_string_lossy().to_string();
 
-    pattern = path.replace("\\", "\\\\").add("/([^/]+/)*").add(&pattern);
+    pattern = regex::escape(&path).add("/([^/]+/)*").add(&pattern);
 
     Regex::new(&pattern).map_err(|_| "Error creating regex pattern: ".to_string() + pattern.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negate_pattern_removes_only_leading_exclamation() {
+        let filter = convert_dockerignore_pattern("!foo!bar", Path::new("/tmp")).unwrap();
+        assert!(filter.negate);
+        let regex_str = filter.regex.as_str();
+        assert!(
+            regex_str.contains("foo!bar") || regex_str.contains("foo\\!bar"),
+            "pattern should preserve non-leading ! but got: {}",
+            regex_str
+        );
+    }
+
+    #[test]
+    fn last_matching_rule_wins() {
+        let filters = vec![
+            DockerignoreFilter::new(Regex::new(".*\\.log$").unwrap(), false),
+            DockerignoreFilter::new(Regex::new(".*important\\.log$").unwrap(), true),
+            DockerignoreFilter::new(Regex::new(".*\\.log$").unwrap(), false),
+        ];
+        assert!(
+            matches_dockerignore_filter(&filters, "important.log"),
+            "last non-negated *.log should override the negation"
+        );
+    }
+
+    #[test]
+    fn path_with_dots_is_regex_escaped() {
+        let result = convert_dockerignore_glob("*.txt", Path::new("/home/user/my.project"));
+        let regex = result.unwrap();
+        let regex_str = regex.as_str();
+        assert!(
+            regex_str.contains("my\\.project"),
+            "dots in path should be escaped but got: {}",
+            regex_str
+        );
+    }
 }
