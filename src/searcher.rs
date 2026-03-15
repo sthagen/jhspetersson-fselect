@@ -386,6 +386,11 @@ impl<'a> Searcher<'a> {
                 .unwrap_or(self.config.dockerignore.unwrap_or(false));
             let traversal_mode = root.options.traversal;
 
+            self.dir_queue.clear();
+            self.visited_dirs.clear();
+            self.hgignore_filters.clear();
+            self.dockerignore_filters.clear();
+
             // Apply filters
             if apply_hgignore {
                 search_upstream_hgignore(&mut self.hgignore_filters, root_dir);
@@ -394,11 +399,6 @@ impl<'a> Searcher<'a> {
             if apply_dockerignore {
                 search_upstream_dockerignore(&mut self.dockerignore_filters, root_dir);
             }
-
-            self.dir_queue.clear();
-            self.visited_dirs.clear();
-            self.hgignore_filters.clear();
-            self.dockerignore_filters.clear();
 
             let result = self.visit_dir(
                 root_dir,
@@ -729,12 +729,15 @@ impl<'a> Searcher<'a> {
                                 if min_depth == 0 || depth >= min_depth {
                                     let checked = self.check_file(&entry, root_dir, &None);
                                     match checked {
-                                        Err(err) => {
+                                        Err(mut err) => {
                                             if err.is_fatal() {
                                                 return Err(err);
                                             }
                                             self.error_count += 1;
-                                            error_message(&path.to_string_lossy(), &err.description);
+                                            if err.source.is_empty() {
+                                                err.source = path.to_string_lossy().to_string();
+                                            }
+                                            err.print();
                                             continue;
                                         }
                                         Ok(()) => {}
@@ -755,12 +758,15 @@ impl<'a> Searcher<'a> {
                                                     if let Ok(afile) = archive.by_index(i) {
                                                         let file_info = to_file_info(&afile);
                                                         match self.check_file(&entry, root_dir, &Some(file_info)) {
-                                                            Err(err) => {
+                                                            Err(mut err) => {
                                                                 if err.is_fatal() {
                                                                     return Err(err);
                                                                 }
                                                                 self.error_count += 1;
-                                                                error_message(&path.to_string_lossy(), &err.description);
+                                                                if err.source.is_empty() {
+                                                                    err.source = path.to_string_lossy().to_string();
+                                                                }
+                                                                err.print();
                                                                 continue;
                                                             }
                                                             Ok(()) => {}
@@ -827,12 +833,15 @@ impl<'a> Searcher<'a> {
                                                     root_dir,
                                                 );
 
-                                                if let Err(err) = result {
+                                                if let Err(mut err) = result {
                                                     if err.is_fatal() {
                                                         return Err(err);
                                                     }
                                                     self.error_count += 1;
-                                                    error_message(&path.to_string_lossy(), &err.description);
+                                                    if err.source.is_empty() {
+                                                        err.source = path.to_string_lossy().to_string();
+                                                    }
+                                                    err.print();
                                                 }
                                             } else {
                                                 self.dir_queue.push_back(path);
@@ -888,12 +897,15 @@ impl<'a> Searcher<'a> {
                     root_dir,
                 );
 
-                if let Err(err) = result {
+                if let Err(mut err) = result {
                     if err.is_fatal() {
                         return Err(err);
                     }
                     self.error_count += 1;
-                    error_message(&path.to_string_lossy(), &err.description);
+                    if err.source.is_empty() {
+                        err.source = path.to_string_lossy().to_string();
+                    }
+                    err.print();
                 }
             }
         }
@@ -934,7 +946,7 @@ impl<'a> Searcher<'a> {
                             return Ok(Variant::empty(VariantType::String));
                         }
                     } else {
-                        return Err(SearchError::fatal(format!("Invalid root alias: {}", column_expr_context_name)));
+                        return Err(SearchError::fatal(format!("Invalid root alias: {}", column_expr_context_name)).with_source("query"));
                     }
                 } else {
                     should_update_context = true;
@@ -1275,7 +1287,7 @@ impl<'a> Searcher<'a> {
             },
             Field::IsFile => match file_info {
                 Some(file_info) => {
-                    return Ok(Variant::from_bool(!file_info.name.ends_with('/')));
+                    return Ok(Variant::from_bool(!file_info.name.ends_with('/') && !file_info.name.ends_with('\\')));
                 }
                 _ => {
                     self.fms
@@ -1503,6 +1515,14 @@ impl<'a> Searcher<'a> {
                     &mode::sgid_bit_set,
                     file_info,
                     &mode::mode_sgid,
+                ));
+            }
+            Field::IsSticky => {
+                return Ok(self.check_file_mode(
+                    entry,
+                    &mode::sticky_bit_set,
+                    file_info,
+                    &mode::mode_sticky,
                 ));
             }
             Field::IsHidden => match file_info {
@@ -2150,6 +2170,10 @@ impl<'a> Searcher<'a> {
 
         let mut items: Vec<(String, String)> = Vec::new();
 
+        if self.use_colors && self.query.fields.iter().any(|f| f.contains_colorized()) {
+            self.fms.update_file_metadata(entry, self.current_follow_symlinks);
+        }
+
         for field in self.query.fields.iter() {
             let record =
                 self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, field)?;
@@ -2193,7 +2217,7 @@ impl<'a> Searcher<'a> {
             }
         } else if let Err(e) = write!(std::io::stdout(), "{}", String::from(buf)) {
             if e.kind() == ErrorKind::BrokenPipe {
-                return Err(SearchError::fatal("broken pipe"));
+                return Err(SearchError::fatal("broken pipe").with_source("output"));
             }
         }
 
@@ -2378,7 +2402,7 @@ impl<'a> Searcher<'a> {
                                             Ok(regex.is_match(&field_value.to_string()))
                                         }
                                         _ => {
-                                            Err(SearchError::normal("Incorrect regex expression: ".to_string() + val.as_str()))
+                                            Err(SearchError::normal("Incorrect regex expression: ".to_string() + val.as_str()).with_source("expression"))
                                         }
                                     }
                                 }
@@ -2398,7 +2422,7 @@ impl<'a> Searcher<'a> {
                                             Ok(!regex.is_match(&field_value.to_string()))
                                         }
                                         _ => {
-                                            Err(SearchError::normal("Incorrect regex expression: ".to_string() + val.as_str()))
+                                            Err(SearchError::normal("Incorrect regex expression: ".to_string() + val.as_str()).with_source("expression"))
                                         }
                                     }
                                 }
@@ -2420,7 +2444,7 @@ impl<'a> Searcher<'a> {
                                                     Ok(regex.is_match(&field_value.to_string()))
                                                 }
                                                 _ => {
-                                                    Err(SearchError::normal("Incorrect LIKE expression: ".to_string() + val.as_str()))
+                                                    Err(SearchError::normal("Incorrect LIKE expression: ".to_string() + val.as_str()).with_source("expression"))
                                                 }
                                             }
                                         },
@@ -2447,7 +2471,7 @@ impl<'a> Searcher<'a> {
                                                     Ok(!regex.is_match(&field_value.to_string()))
                                                 }
                                                 _ => {
-                                                    Err(SearchError::normal("Incorrect NOT LIKE expression: ".to_string() + val.as_str()))
+                                                    Err(SearchError::normal("Incorrect NOT LIKE expression: ".to_string() + val.as_str()).with_source("expression"))
                                                 }
                                             }
                                         },
@@ -2988,8 +3012,9 @@ mod tests {
     use super::*;
     use crate::expr::Expr;
     use crate::field::Field;
+    use crate::fileinfo::FileInfo;
     use crate::function::Function;
-    use crate::query::{OutputFormat, Query};
+    use crate::query::{OutputFormat, Query, Root, RootOptions};
 
     // Tests for FileMetadataState
     #[test]
@@ -3468,6 +3493,169 @@ mod tests {
             errors, 0,
             "symlink to file should not cause directory traversal error, errors={}",
             errors
+        );
+    }
+
+    #[test]
+    fn test_is_file_false_for_backslash_terminated_archive_entry() {
+        let tmp = std::env::temp_dir().join("fselect_test_isfile_backslash");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("dummy.txt"), "").unwrap();
+
+        let entry = fs::read_dir(&tmp).unwrap().next().unwrap().unwrap();
+
+        let file_info = Some(FileInfo {
+            name: String::from("somedir\\"),
+            size: 0,
+            mode: None,
+            modified: None,
+        });
+
+        let mut searcher = create_test_searcher();
+        let result = searcher.get_field_value(&entry, &file_info, &tmp, &Field::IsFile).unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        // A directory entry (name ends with \) should NOT be reported as a file
+        assert_eq!(result.to_string(), "false");
+    }
+
+    #[test]
+    fn test_is_dir_and_is_file_consistent_for_backslash_archive_entry() {
+        let tmp = std::env::temp_dir().join("fselect_test_consistency_backslash");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("dummy.txt"), "").unwrap();
+
+        let entry = fs::read_dir(&tmp).unwrap().next().unwrap().unwrap();
+
+        let file_info = Some(FileInfo {
+            name: String::from("somedir\\"),
+            size: 0,
+            mode: None,
+            modified: None,
+        });
+
+        let mut searcher = create_test_searcher();
+        let is_dir = searcher.get_field_value(&entry, &file_info, &tmp, &Field::IsDir).unwrap();
+        let is_file = searcher.get_field_value(&entry, &file_info, &tmp, &Field::IsFile).unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        // is_dir and is_file should be mutually exclusive for directories
+        assert_eq!(is_dir.to_string(), "true");
+        assert_eq!(is_file.to_string(), "false");
+    }
+
+    #[test]
+    fn test_hgignore_filters_survive_clear_before_load() {
+        // Verify the correct order: clear first, then load filters
+        let tmp = std::env::temp_dir().join("fselect_test_hgignore_order");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::create_dir_all(tmp.join(".hg")).unwrap();
+        fs::write(tmp.join("ignored.log"), "data").unwrap();
+        fs::write(tmp.join("kept.txt"), "data").unwrap();
+        fs::write(tmp.join(".hgignore"), "syntax: glob\n*.log\n").unwrap();
+
+        let query = Box::leak(Box::new(Query {
+            fields: Vec::new(),
+            roots: vec![Root::new(tmp.to_string_lossy().to_string(), RootOptions::new())],
+            expr: None,
+            grouping_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        }));
+
+        let config = Box::leak(Box::new(Config::default()));
+        let default_config = Box::leak(Box::new(Config::default()));
+
+        let mut searcher = Searcher::new(query, config, default_config, false);
+
+        // Correct order (matching the fixed code): clear first, then load
+        searcher.dir_queue.clear();
+        searcher.visited_dirs.clear();
+        searcher.hgignore_filters.clear();
+        searcher.dockerignore_filters.clear();
+
+        search_upstream_hgignore(&mut searcher.hgignore_filters, Path::new(&tmp));
+
+        let filters_count = searcher.hgignore_filters.len();
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert!(filters_count > 0, "hgignore filters should be available after clear-then-load");
+    }
+
+    #[test]
+    fn test_is_symlink_false_when_following_symlinks() {
+        let tmp = std::env::temp_dir().join("fselect_test_symlink_follow_islink");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("real_file.txt"), "hello world").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("real_file.txt", tmp.join("link")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(tmp.join("real_file.txt"), tmp.join("link")).unwrap();
+
+        let entry = fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == "link")
+            .unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let result = searcher
+            .get_field_value(&entry, &None, &tmp, &Field::IsSymlink)
+            .unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(
+            result.to_string(),
+            "false",
+            "is_symlink should be false when following symlinks"
+        );
+    }
+
+    #[test]
+    fn test_size_follows_symlink_when_requested() {
+        let tmp = std::env::temp_dir().join("fselect_test_symlink_follow_size");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let content = "hello world, this is a reasonably long test string for size comparison";
+        fs::write(tmp.join("real_file.txt"), content).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("real_file.txt", tmp.join("link")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(tmp.join("real_file.txt"), tmp.join("link")).unwrap();
+
+        let entry = fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == "link")
+            .unwrap();
+
+        let mut searcher = create_test_searcher();
+        searcher.current_follow_symlinks = true;
+
+        let result = searcher
+            .get_field_value(&entry, &None, &tmp, &Field::Size)
+            .unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+
+        let size = result.to_int();
+        let expected_size = content.len() as i64;
+
+        assert_eq!(
+            size, expected_size,
+            "size should be target file's size ({}) when following symlinks, got {}",
+            expected_size, size
         );
     }
 
