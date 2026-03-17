@@ -202,15 +202,21 @@ Per-group permission bits.
 .BR other_read ", " other_write ", " other_exec ", " other_all " / " other_rwx
 Permission bits for other users.
 .TP
-.BR suid " / " sgid
-SUID / SGID bit.
+.BR suid " or " is_suid
+SUID bit.
 .TP
-.B is_sticky
+.BR sgid " or " is_sgid
+SGID bit.
+.TP
+.BR is_sticky " or " sticky
 Sticky bit.
-.SS Linux-specific
+.SS Unix/Linux-specific
 .TP
 .B device
 Device number the file resides on.
+.TP
+.B rdev
+Device ID for special files (character and block devices).
 .TP
 .B inode
 Inode number.
@@ -220,6 +226,15 @@ Number of 256-byte blocks allocated.
 .TP
 .B hardlinks
 Number of hard links.
+.TP
+.B atime
+Last access time as a Unix timestamp (seconds since epoch).
+.TP
+.B mtime
+Last modification time as a Unix timestamp (seconds since epoch).
+.TP
+.B ctime
+Last status change time as a Unix timestamp (seconds since epoch).
 .TP
 .B has_xattrs
 True if the file has extended attributes (xattrs).
@@ -234,11 +249,34 @@ True if any
 .B extattrs
 flag is set.
 .TP
+.B acl
+All ACL entries in standard form, comma-separated.
+On Linux, returns POSIX ACL entries in
+.BR getfacl (1)
+format.
+On Windows, returns explicit DACL entries as
+.BR type : trustee : permissions
+(e.g.,
+.BR allow:BUILTIN\eAdministrators:full ).
+Permission labels:
+.BR full ", " modify ", " rx ", " read ", " write ,
+or a hex value for non-standard masks.
+Available only on Linux and Windows.
+.TP
 .B has_acl
-True if the file has POSIX ACL entries beyond standard Unix permissions.
+True if the file has POSIX ACL entries beyond standard Unix permissions
+or explicit (non-inherited) Windows DACL entries.
+.TP
+.B default_acl
+All default POSIX ACL entries in standard form, comma-separated.
+Available only on Linux.
 .TP
 .B has_default_acl
 True if the directory has default POSIX ACL entries.
+.TP
+.BR has_capabilities " or " has_caps
+True if the file has Linux capabilities.
+Available only on Linux.
 .TP
 .BR capabilities " or " caps
 Linux capabilities string assigned to the file.
@@ -567,12 +605,6 @@ True if the given
 flag is set.
 Available only on Linux.
 .TP
-.BR ACL ()
-All POSIX ACL entries in
-.BR getfacl (1)
-format, comma-separated.
-Available only on Linux.
-.TP
 .BR HAS_ACL_ENTRY "(entry)"
 True if the specified ACL entry exists.
 Entry format:
@@ -584,17 +616,11 @@ Entry format:
 .BR ACL_ENTRY "(entry)"
 Permissions for the specified ACL entry.
 .TP
-.BR DEFAULT_ACL ()
-All default POSIX ACL entries.
-.TP
 .BR HAS_DEFAULT_ACL_ENTRY "(entry)"
 True if the specified default ACL entry exists.
 .TP
 .BR DEFAULT_ACL_ENTRY "(entry)"
 Permissions for the specified default ACL entry.
-.TP
-.BR HAS_CAPABILITIES " / " HAS_CAPS ()
-True if the file has any Linux capabilities.
 .TP
 .BR HAS_CAPABILITY " / " HAS_CAP "(cap)"
 True if the file has the given Linux capability.

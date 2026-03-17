@@ -293,6 +293,11 @@ fields! {
         @weight = 1
         @description = "Returns the code of device the file is stored on"
         Device,
+
+        #[text = ["rdev"]]
+        @weight = 1
+        @description = "Returns the device ID for special files (character and block devices)"
+        Rdev,
         
         #[text = ["inode"]]
         @weight = 1
@@ -308,7 +313,22 @@ fields! {
         @weight = 1
         @description = "Returns the number of hardlinks of the file"
         Hardlinks,
-        
+
+        #[text = ["atime"]]
+        @weight = 1
+        @description = "Returns the last access time as a Unix timestamp (seconds since epoch)"
+        Atime,
+
+        #[text = ["mtime"]]
+        @weight = 1
+        @description = "Returns the last modification time as a Unix timestamp (seconds since epoch)"
+        Mtime,
+
+        #[text = ["ctime"]]
+        @weight = 1
+        @description = "Returns the last status change time as a Unix timestamp (seconds since epoch)"
+        Ctime,
+
         #[text = ["mode"]]
         @for_archived = true
         @weight = 1
@@ -387,19 +407,19 @@ fields! {
         @description = "Returns a boolean signifying whether the file can be fully accessed by the others"
         OtherAll,
         
-        #[text = ["suid"], data_type = "boolean"]
+        #[text = ["suid", "is_suid"], data_type = "boolean"]
         @for_archived = true
         @weight = 1
         @description = "Returns a boolean signifying whether the file permissions have a SUID bit set"
         Suid,
-        
-        #[text = ["sgid"], data_type = "boolean"]
+
+        #[text = ["sgid", "is_sgid"], data_type = "boolean"]
         @for_archived = true
         @weight = 1
         @description = "Returns a boolean signifying whether the file permissions have a SGID bit set"
         Sgid,
 
-        #[text = ["is_sticky"], data_type = "boolean"]
+        #[text = ["is_sticky", "sticky"], data_type = "boolean"]
         @for_archived = true
         @weight = 1
         @description = "Returns a boolean signifying whether the file permissions have a sticky bit set"
@@ -426,15 +446,30 @@ fields! {
         @description = "Returns a boolean signifying whether the file has any extended file attributes set"
         HasExtattrs,
 
+        #[text = ["acl"]]
+        @weight = 2
+        @description = "Returns all POSIX ACL entries in standard form"
+        Acl,
+
         #[text = ["has_acl"], data_type = "boolean"]
         @weight = 2
-        @description = "Returns a boolean signifying whether the file has POSIX ACL entries beyond standard permissions"
+        @description = "Returns a boolean signifying whether the file has POSIX ACL entries beyond standard permissions or Windows explicit ACEs"
         HasAcl,
+
+        #[text = ["default_acl"]]
+        @weight = 2
+        @description = "Returns all default POSIX ACL entries in standard form"
+        DefaultAcl,
 
         #[text = ["has_default_acl"], data_type = "boolean"]
         @weight = 2
         @description = "Returns a boolean signifying whether the directory has default POSIX ACL entries"
         HasDefaultAcl,
+
+        #[text = ["has_capabilities", "has_caps"], data_type = "boolean"]
+        @weight = 2
+        @description = "Returns a boolean signifying whether the file has capabilities"
+        HasCapabilities,
 
         #[text = ["capabilities", "caps"]]
         @weight = 2

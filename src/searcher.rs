@@ -165,6 +165,14 @@ pub struct Searcher<'a> {
     lscolors: LsColors,
     dir_queue: VecDeque<PathBuf>,
     current_follow_symlinks: bool,
+    current_min_depth: u32,
+    current_max_depth: u32,
+    current_search_archives: bool,
+    current_apply_gitignore: bool,
+    current_apply_hgignore: bool,
+    current_apply_dockerignore: bool,
+    current_traversal_mode: TraversalMode,
+    current_root_dir: PathBuf,
 
     fms: FileMetadataState,
     conforms_map: HashMap<String, String>,
@@ -227,6 +235,14 @@ impl<'a> Searcher<'a> {
             lscolors: LsColors::from_env().unwrap_or_default(),
             dir_queue: VecDeque::new(),
             current_follow_symlinks: false,
+            current_min_depth: 0,
+            current_max_depth: 0,
+            current_search_archives: false,
+            current_apply_gitignore: false,
+            current_apply_hgignore: false,
+            current_apply_dockerignore: false,
+            current_traversal_mode: TraversalMode::Bfs,
+            current_root_dir: PathBuf::new(),
 
             fms: FileMetadataState::new(),
             conforms_map: HashMap::new(),
@@ -238,15 +254,7 @@ impl<'a> Searcher<'a> {
     }
 
     pub fn is_buffered(&self) -> bool {
-        self.has_ordering() || self.has_aggregate_column() || self.silent_mode
-    }
-
-    fn has_ordering(&self) -> bool {
-        self.query.is_ordered()
-    }
-
-    fn has_aggregate_column(&self) -> bool {
-        self.query.has_aggregate_column()
+        self.query.is_ordered() || self.query.has_aggregate_column() || self.silent_mode
     }
 
     /// Searches directories based on configured query and outputs results to stdout.
@@ -369,23 +377,23 @@ impl<'a> Searcher<'a> {
                 _ => None,
             };
 
-            let root_dir = Path::new(&root.path);
-            let min_depth = root.options.min_depth;
-            let max_depth = root.options.max_depth;
-            let search_archives = root.options.archives;
-            let apply_gitignore = root
+            self.current_root_dir = PathBuf::from(&root.path);
+            self.current_min_depth = root.options.min_depth;
+            self.current_max_depth = root.options.max_depth;
+            self.current_search_archives = root.options.archives;
+            self.current_apply_gitignore = root
                 .options
                 .gitignore
                 .unwrap_or(self.config.gitignore.unwrap_or(false));
-            let apply_hgignore = root
+            self.current_apply_hgignore = root
                 .options
                 .hgignore
                 .unwrap_or(self.config.hgignore.unwrap_or(false));
-            let apply_dockerignore = root
+            self.current_apply_dockerignore = root
                 .options
                 .dockerignore
                 .unwrap_or(self.config.dockerignore.unwrap_or(false));
-            let traversal_mode = root.options.traversal;
+            self.current_traversal_mode = root.options.traversal;
 
             self.dir_queue.clear();
             self.visited_dirs.clear();
@@ -393,28 +401,20 @@ impl<'a> Searcher<'a> {
             self.dockerignore_filters.clear();
 
             // Apply filters
-            if apply_hgignore {
-                search_upstream_hgignore(&mut self.hgignore_filters, root_dir);
+            if self.current_apply_hgignore {
+                search_upstream_hgignore(&mut self.hgignore_filters, &self.current_root_dir);
             }
 
-            if apply_dockerignore {
-                search_upstream_dockerignore(&mut self.dockerignore_filters, root_dir);
+            if self.current_apply_dockerignore {
+                search_upstream_dockerignore(&mut self.dockerignore_filters, &self.current_root_dir);
             }
 
             let result = self.visit_dir(
-                root_dir,
-                min_depth,
-                max_depth,
+                &self.current_root_dir.clone(),
                 0,
-                search_archives,
-                apply_gitignore,
                 #[cfg(feature = "git")]
-                Repository::discover(&root_dir).ok().as_ref(),
-                apply_hgignore,
-                apply_dockerignore,
-                traversal_mode,
+                Repository::discover(&self.current_root_dir).ok().as_ref(),
                 true,
-                root_dir,
             );
 
             if let Err(err) = result {
@@ -427,7 +427,7 @@ impl<'a> Searcher<'a> {
         let compute_time = std::time::Instant::now();
 
         // ======== Compute results =========
-        if self.has_aggregate_column() {
+        if self.query.has_aggregate_column() {
             if !self.query.grouping_fields.is_empty() {
                 let group_keys: Vec<String> = self
                     .query
@@ -615,18 +615,10 @@ impl<'a> Searcher<'a> {
     fn visit_dir(
         &mut self,
         dir: &Path,
-        min_depth: u32,
-        max_depth: u32,
         root_depth: u32,
-        search_archives: bool,
-        apply_gitignore: bool,
         #[cfg(feature = "git")]
         git_repository: Option<&Repository>,
-        apply_hgignore: bool,
-        apply_dockerignore: bool,
-        traversal_mode: TraversalMode,
         process_queue: bool,
-        root_dir: &Path,
     ) -> Result<(), SearchError> {
         let canonical_path = match canonical_path(&dir.to_path_buf()) {
             Ok(path) => path,
@@ -670,7 +662,7 @@ impl<'a> Searcher<'a> {
                     match entry {
                         Ok(entry) => {
                             let mut path = entry.path();
-                            let pass_ignores = if apply_gitignore || apply_hgignore || apply_dockerignore {
+                            let pass_ignores = if self.current_apply_gitignore || self.current_apply_hgignore || self.current_apply_dockerignore {
                                 let canonical_path = match crate::util::canonical_path(&path) {
                                     Ok(canonicalized) => PathBuf::from(canonicalized),
                                     Err(_) => path.clone(),
@@ -678,19 +670,19 @@ impl<'a> Searcher<'a> {
 
                                 // Check the path against the filters
                                 #[cfg(feature = "git")]
-                                let pass_gitignore = !apply_gitignore
+                                let pass_gitignore = !self.current_apply_gitignore
                                     || !(git_repository.is_some() &&
                                     git_repository.unwrap().is_path_ignored(&canonical_path)
                                         .unwrap_or(false));
                                 #[cfg(not(feature = "git"))]
                                 let pass_gitignore = true;
 
-                                let pass_hgignore = !apply_hgignore
+                                let pass_hgignore = !self.current_apply_hgignore
                                     || !matches_hgignore_filter(
                                     &self.hgignore_filters,
                                     canonical_path.to_string_lossy().as_ref(),
                                 );
-                                let pass_dockerignore = !apply_dockerignore
+                                let pass_dockerignore = !self.current_apply_dockerignore
                                     || !matches_dockerignore_filter(
                                     &self.dockerignore_filters,
                                     canonical_path.to_string_lossy().as_ref(),
@@ -703,8 +695,8 @@ impl<'a> Searcher<'a> {
 
                             // If the path passes the filters, process it
                             if pass_ignores {
-                                if min_depth == 0 || depth >= min_depth {
-                                    let checked = self.check_file(&entry, root_dir, &None);
+                                if self.current_min_depth == 0 || depth >= self.current_min_depth {
+                                    let checked = self.check_file(&entry, &self.current_root_dir.clone(), &None);
                                     match checked {
                                         Err(err) => {
                                             if err.is_fatal() {
@@ -716,7 +708,7 @@ impl<'a> Searcher<'a> {
                                         Ok(()) => {}
                                     }
 
-                                    if search_archives
+                                    if self.current_search_archives
                                         && self.is_zip_archive(&path.to_string_lossy())
                                     {
                                         if let Ok(file) = fs::File::open(&path) {
@@ -730,7 +722,7 @@ impl<'a> Searcher<'a> {
 
                                                     if let Ok(afile) = archive.by_index(i) {
                                                         let file_info = to_file_info(&afile);
-                                                        match self.check_file(&entry, root_dir, &Some(file_info)) {
+                                                        match self.check_file(&entry, &self.current_root_dir.clone(), &Some(file_info)) {
                                                             Err(err) => {
                                                                 if err.is_fatal() {
                                                                     return Err(err);
@@ -748,73 +740,67 @@ impl<'a> Searcher<'a> {
                                 }
 
                                 // Recursively visit subdirectories if we're not too deep
-                                if max_depth == 0 || depth < max_depth {
-                                    let result = entry.file_type();
-                                    if let Ok(file_type) = result {
-                                        let mut ok = false;
+                                if self.current_max_depth == 0 || depth < self.current_max_depth {
+                                    match entry.file_type() {
+                                        Ok(file_type) => {
+                                            let mut ok = false;
 
-                                        if file_type.is_symlink() && self.current_follow_symlinks {
-                                            if let Ok(resolved) = fs::read_link(&path) {
-                                                let resolved_path = if resolved.is_relative() {
-                                                    if let Some(parent) = path.parent() {
-                                                        parent.join(&resolved)
+                                            if file_type.is_symlink() && self.current_follow_symlinks {
+                                                if let Ok(resolved) = fs::read_link(&path) {
+                                                    let resolved_path = if resolved.is_relative() {
+                                                        if let Some(parent) = path.parent() {
+                                                            parent.join(&resolved)
+                                                        } else {
+                                                            resolved
+                                                        }
                                                     } else {
                                                         resolved
+                                                    };
+                                                    if resolved_path.is_dir() {
+                                                        ok = true;
+                                                        path = resolved_path;
+                                                    }
+                                                }
+                                            } else if file_type.is_dir() {
+                                                ok = true;
+                                            }
+
+                                            if ok && self.ok_to_visit_dir(file_type) {
+                                                if self.current_traversal_mode == Dfs {
+                                                    #[cfg(feature = "git")]
+                                                    let repo;
+                                                    #[cfg(feature = "git")]
+                                                    let git_repository = match git_repository {
+                                                        Some(repo) => Some(repo),
+                                                        None if self.current_apply_gitignore => {
+                                                            repo = Repository::open(&path).ok();
+                                                            repo.as_ref()
+                                                        },
+                                                        _ => None,
+                                                    };
+                                                    let result = self.visit_dir(
+                                                        &path,
+                                                        base_depth,
+                                                        #[cfg(feature = "git")]
+                                                        git_repository,
+                                                        false,
+                                                    );
+
+                                                    if let Err(err) = result {
+                                                        if err.is_fatal() {
+                                                            return Err(err);
+                                                        }
+                                                        self.handle_nonfatal_error(err, &path);
                                                     }
                                                 } else {
-                                                    resolved
-                                                };
-                                                if resolved_path.is_dir() {
-                                                    ok = true;
-                                                    path = resolved_path;
+                                                    self.dir_queue.push_back(path);
                                                 }
                                             }
-                                        } else if file_type.is_dir() {
-                                            ok = true;
                                         }
-
-                                        if ok && self.ok_to_visit_dir(file_type) {
-                                            if traversal_mode == Dfs {
-                                                #[cfg(feature = "git")]
-                                                let repo;
-                                                #[cfg(feature = "git")]
-                                                let git_repository = match git_repository {
-                                                    Some(repo) => Some(repo),
-                                                    None if apply_gitignore => {
-                                                        repo = Repository::open(&path).ok();
-                                                        repo.as_ref()
-                                                    },
-                                                    _ => None,
-                                                };
-                                                let result = self.visit_dir(
-                                                    &path,
-                                                    min_depth,
-                                                    max_depth,
-                                                    base_depth,
-                                                    search_archives,
-                                                    apply_gitignore,
-                                                    #[cfg(feature = "git")]
-                                                    git_repository,
-                                                    apply_hgignore,
-                                                    apply_dockerignore,
-                                                    traversal_mode,
-                                                    false,
-                                                    root_dir,
-                                                );
-
-                                                if let Err(err) = result {
-                                                    if err.is_fatal() {
-                                                        return Err(err);
-                                                    }
-                                                    self.handle_nonfatal_error(err, &path);
-                                                }
-                                            } else {
-                                                self.dir_queue.push_back(path);
-                                            }
+                                        Err(err) => {
+                                            self.error_count += 1;
+                                            path_error_message(&path, err);
                                         }
-                                    } else {
-                                        self.error_count += 1;
-                                        path_error_message(&path, result.err().unwrap());
                                     }
                                 }
                             }
@@ -832,7 +818,7 @@ impl<'a> Searcher<'a> {
             }
         }
 
-        if traversal_mode == Bfs && process_queue {
+        if self.current_traversal_mode == Bfs && process_queue {
             while !self.dir_queue.is_empty() {
                 let path = self.dir_queue.pop_front().unwrap();
                 #[cfg(feature = "git")]
@@ -840,7 +826,7 @@ impl<'a> Searcher<'a> {
                 #[cfg(feature = "git")]
                 let git_repository = match git_repository {
                     Some(repo) => Some(repo),
-                    None if apply_gitignore => {
+                    None if self.current_apply_gitignore => {
                         repo = Repository::open(&path).ok();
                         repo.as_ref()
                     },
@@ -848,18 +834,10 @@ impl<'a> Searcher<'a> {
                 };
                 let result = self.visit_dir(
                     &path,
-                    min_depth,
-                    max_depth,
                     base_depth,
-                    search_archives,
-                    apply_gitignore,
                     #[cfg(feature = "git")]
                     git_repository,
-                    apply_hgignore,
-                    apply_dockerignore,
-                    traversal_mode,
                     false,
-                    root_dir,
                 );
 
                 if let Err(err) = result {
@@ -1275,6 +1253,19 @@ impl<'a> Searcher<'a> {
 
                 return Ok(Variant::empty(VariantType::String));
             }
+            Field::Rdev => {
+                #[cfg(unix)]
+                {
+                    self.fms
+                        .update_file_metadata(entry, self.current_follow_symlinks);
+
+                    if let Some(attrs) = self.fms.get_file_metadata() {
+                        return Ok(Variant::from_int(attrs.rdev() as i64));
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::String));
+            }
             Field::Inode => {
                 #[cfg(unix)]
                 {
@@ -1313,6 +1304,45 @@ impl<'a> Searcher<'a> {
                 }
 
                 return Ok(Variant::empty(VariantType::String));
+            }
+            Field::Atime => {
+                #[cfg(unix)]
+                {
+                    self.fms
+                        .update_file_metadata(entry, self.current_follow_symlinks);
+
+                    if let Some(attrs) = self.fms.get_file_metadata() {
+                        return Ok(Variant::from_int(attrs.atime()));
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::Int));
+            }
+            Field::Mtime => {
+                #[cfg(unix)]
+                {
+                    self.fms
+                        .update_file_metadata(entry, self.current_follow_symlinks);
+
+                    if let Some(attrs) = self.fms.get_file_metadata() {
+                        return Ok(Variant::from_int(attrs.mtime()));
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::Int));
+            }
+            Field::Ctime => {
+                #[cfg(unix)]
+                {
+                    self.fms
+                        .update_file_metadata(entry, self.current_follow_symlinks);
+
+                    if let Some(attrs) = self.fms.get_file_metadata() {
+                        return Ok(Variant::from_int(attrs.ctime()));
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::Int));
             }
             Field::Mode => match file_info {
                 Some(file_info) => {
@@ -1566,7 +1596,14 @@ impl<'a> Searcher<'a> {
                     }
                 }
 
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    return Ok(Variant::from_bool(
+                        crate::util::win_xattr::has_any_ads(&entry.path()),
+                    ));
+                }
+
+                #[cfg(not(any(unix, windows)))]
                 {
                     return Ok(Variant::from_bool(false));
                 }
@@ -1600,6 +1637,27 @@ impl<'a> Searcher<'a> {
                     return Ok(Variant::from_bool(false));
                 }
             }
+            Field::Acl => {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(file) = fs::File::open(entry.path()) {
+                        if let Ok(Some(acl_data)) = file.get_xattr("system.posix_acl_access") {
+                            if let Some(entries) = crate::util::acl::parse_acl(&acl_data) {
+                                return Ok(Variant::from_string(&crate::util::acl::format_acl(&entries)));
+                            }
+                        }
+                    }
+                }
+
+                #[cfg(windows)]
+                {
+                    if let Some(acl_str) = crate::util::win_acl::format_acl(&entry.path()) {
+                        return Ok(Variant::from_string(&acl_str));
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::String));
+            }
             Field::HasAcl => {
                 #[cfg(target_os = "linux")]
                 {
@@ -1612,10 +1670,33 @@ impl<'a> Searcher<'a> {
                     }
                 }
 
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(windows)]
+                {
+                    return Ok(Variant::from_bool(
+                        crate::util::win_acl::has_explicit_acl(&entry.path()),
+                    ));
+                }
+
+                #[cfg(not(any(target_os = "linux", windows)))]
                 {
                     return Ok(Variant::from_bool(false));
                 }
+            }
+            Field::DefaultAcl => {
+                #[cfg(target_os = "linux")]
+                {
+                    if entry.path().is_dir() {
+                        if let Ok(file) = fs::File::open(entry.path()) {
+                            if let Ok(Some(acl_data)) = file.get_xattr("system.posix_acl_default") {
+                                if let Some(entries) = crate::util::acl::parse_acl(&acl_data) {
+                                    return Ok(Variant::from_string(&crate::util::acl::format_acl(&entries)));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return Ok(Variant::empty(VariantType::String));
             }
             Field::HasDefaultAcl => {
                 #[cfg(target_os = "linux")]
@@ -1635,6 +1716,18 @@ impl<'a> Searcher<'a> {
                 {
                     return Ok(Variant::from_bool(false));
                 }
+            }
+            Field::HasCapabilities => {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(file) = fs::File::open(entry.path()) {
+                        if let Ok(caps_xattr) = file.get_xattr("security.capability") {
+                            return Ok(Variant::from_bool(caps_xattr.is_some()));
+                        }
+                    }
+                }
+
+                return Ok(Variant::from_bool(false));
             }
             Field::Capabilities => {
                 #[cfg(target_os = "linux")]
@@ -1865,9 +1958,10 @@ impl<'a> Searcher<'a> {
             | Field::IsImage
             | Field::IsSource
             | Field::IsVideo => {
+                let os_name = entry.file_name();
                 let name = match file_info {
-                    Some(fi) => std::borrow::Cow::Borrowed(fi.name.as_str()),
-                    None => entry.file_name().to_string_lossy().into_owned().into(),
+                    Some(fi) => fi.name.as_str(),
+                    None => &os_name.to_string_lossy(),
                 };
                 let result = match field {
                     Field::IsArchive => self.is_archive(&name),
@@ -1938,7 +2032,7 @@ impl<'a> Searcher<'a> {
 
         self.found += 1;
 
-        if self.has_aggregate_column() {
+        if self.query.has_aggregate_column() {
             for field in self.query.get_all_fields() {
                 file_map.insert(
                     field.to_string(),
@@ -2057,22 +2151,6 @@ impl<'a> Searcher<'a> {
         Variant::from_bool(false)
     }
 
-    fn get_in_args(&mut self, expr: &Expr) -> Vec<Expr> {
-        let right = expr.right.as_ref().unwrap();
-        match &right.args {
-            Some(args) => args.clone(),
-            None => {
-                if let Some(subquery) = &right.subquery {
-                    self.get_list_from_subquery(*subquery.clone()).iter().map(|s| {
-                        Expr::value(s.to_string())
-                    }).collect()
-                } else {
-                    vec![]
-                }
-            }
-        }
-    }
-
     fn check_exists(&mut self, expr: &Expr) -> bool {
         let right = expr.right.as_ref().unwrap();
         match &right.args {
@@ -2101,10 +2179,25 @@ impl<'a> Searcher<'a> {
         field_value: &Variant,
         negate: bool,
     ) -> Result<bool, SearchError> {
-        let args = self.get_in_args(expr);
+        let right = expr.right.as_ref().unwrap();
+        let owned_args;
+        let args: &[Expr] = match &right.args {
+            Some(args) => args,
+            None => {
+                owned_args = if let Some(subquery) = &right.subquery {
+                    self.get_list_from_subquery(*subquery.clone())
+                        .iter()
+                        .map(|s| Expr::value(s.to_string()))
+                        .collect()
+                } else {
+                    vec![]
+                };
+                &owned_args
+            }
+        };
         let field_type = field_value.get_type();
         let mut found = false;
-        for arg in &args {
+        for arg in args {
             arg_map.clear();
             let arg_val = self.get_column_expr_value(
                 Some(entry), file_info, root_path, arg_map, None, arg,
@@ -2202,28 +2295,41 @@ impl<'a> Searcher<'a> {
             }
 
             let mut temp_map = std::mem::take(&mut self.conforms_map);
-            let field_value = self.get_column_expr_value(
+            let field_value = match self.get_column_expr_value(
                 Some(entry),
                 file_info,
                 root_path,
                 &mut temp_map,
                 None,
                 expr.left.as_ref().unwrap(),
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.conforms_map = temp_map;
+                    return Err(e);
+                }
+            };
             temp_map.clear();
             let value = match op {
                 Op::In | Op::NotIn => Variant::empty(VariantType::String),
                 _ => {
-                    let v = self.get_column_expr_value(
+                    match self.get_column_expr_value(
                         Some(entry),
                         file_info,
                         root_path,
                         &mut temp_map,
                         None,
                         expr.right.as_ref().unwrap(),
-                    )?;
-                    temp_map.clear();
-                    v
+                    ) {
+                        Ok(v) => {
+                            temp_map.clear();
+                            v
+                        }
+                        Err(e) => {
+                            self.conforms_map = temp_map;
+                            return Err(e);
+                        }
+                    }
                 }
             };
             self.conforms_map = temp_map;
@@ -2515,19 +2621,19 @@ mod tests {
     #[test]
     fn test_has_ordering() {
         let searcher_with_ordering = create_test_searcher_with_ordering();
-        assert!(searcher_with_ordering.has_ordering());
+        assert!(searcher_with_ordering.query.is_ordered());
 
         let searcher_without_ordering = create_test_searcher();
-        assert!(!searcher_without_ordering.has_ordering());
+        assert!(!searcher_without_ordering.query.is_ordered());
     }
 
     #[test]
     fn test_has_aggregate_column() {
         let searcher_with_aggregate = create_test_searcher_with_aggregate();
-        assert!(searcher_with_aggregate.has_aggregate_column());
+        assert!(searcher_with_aggregate.query.has_aggregate_column());
 
         let searcher_without_aggregate = create_test_searcher();
-        assert!(!searcher_without_aggregate.has_aggregate_column());
+        assert!(!searcher_without_aggregate.query.has_aggregate_column());
     }
 
     #[test]
@@ -2721,17 +2827,15 @@ mod tests {
 
         let mut searcher = create_test_searcher();
         searcher.current_follow_symlinks = true;
+        searcher.current_traversal_mode = Dfs;
+        searcher.current_root_dir = root.clone();
 
         let _ = searcher.visit_dir(
             &root,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Dfs,
             true,
-            &root,
         );
 
         let found = searcher.found;
@@ -2760,17 +2864,14 @@ mod tests {
 
         let mut searcher = create_test_searcher();
         searcher.current_follow_symlinks = true;
+        searcher.current_root_dir = root.clone();
 
         let _ = searcher.visit_dir(
             &root,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Bfs,
             true,
-            &root,
         );
 
         let found = searcher.found;
@@ -2805,17 +2906,15 @@ mod tests {
 
         let mut searcher = create_test_searcher();
         searcher.current_follow_symlinks = true;
+        searcher.current_traversal_mode = Dfs;
+        searcher.current_root_dir = tmp.clone();
 
         let _ = searcher.visit_dir(
             &tmp,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Dfs,
             true,
-            &tmp,
         );
 
         let found = searcher.found;
@@ -2840,17 +2939,15 @@ mod tests {
 
         let mut searcher = create_test_searcher();
         searcher.current_follow_symlinks = true;
+        searcher.current_traversal_mode = Dfs;
+        searcher.current_root_dir = tmp.clone();
 
         let _ = searcher.visit_dir(
             &tmp,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Dfs,
             true,
-            &tmp,
         );
 
         let errors = searcher.error_count;
@@ -3044,33 +3141,28 @@ mod tests {
 
         let mut searcher = create_test_searcher();
         searcher.current_follow_symlinks = true;
+        searcher.current_traversal_mode = Dfs;
+        searcher.current_root_dir = root_a.clone();
 
         let _ = searcher.visit_dir(
             &root_a,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Dfs,
             true,
-            &root_a,
         );
 
         let found_after_a = searcher.found;
 
         searcher.visited_dirs.clear();
+        searcher.current_root_dir = root_b.clone();
 
         let _ = searcher.visit_dir(
             &root_b,
-            0, 0, 0,
-            false, false,
+            0,
             #[cfg(feature = "git")]
             None,
-            false, false,
-            Dfs,
             true,
-            &root_b,
         );
 
         let found_after_b = searcher.found;
