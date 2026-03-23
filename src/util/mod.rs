@@ -9,7 +9,7 @@ pub(crate) mod extattrs;
 pub(crate) mod win_acl;
 #[cfg(windows)]
 pub(crate) mod win_xattr;
-mod datetime;
+pub(crate) mod datetime;
 pub mod dimensions;
 pub mod duration;
 pub(crate) mod error;
@@ -549,7 +549,7 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
                         exif_info.insert(
                             field_tag,
                             vec.iter()
-                                .map(|r| (r.num / r.denom).to_string())
+                                .map(|r| (r.num as f64 / r.denom as f64).to_string())
                                 .collect::<Vec<String>>()
                                 .join(";"),
                         );
@@ -607,7 +607,7 @@ fn parse_location_string(s: String, location_ref: String, modifier_value: &str) 
     if parts.len() == 3 {
         let mut coord = parts[0].parse::<f32>().unwrap_or(0.0)
             + parts[1].parse::<f32>().unwrap_or(0.0) / 60.0
-            + parts[2].parse::<f32>().unwrap_or(0.0) / 3660.0;
+            + parts[2].parse::<f32>().unwrap_or(0.0) / 3600.0;
         if location_ref.eq(modifier_value) {
             coord = -coord;
         }

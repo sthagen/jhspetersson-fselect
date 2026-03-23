@@ -239,6 +239,9 @@ Last status change time as a Unix timestamp (seconds since epoch).
 .B has_xattrs
 True if the file has extended attributes (xattrs).
 .TP
+.B xattr_count
+Number of extended attributes (xattrs) on the file, or alternate data streams on Windows.
+.TP
 .B extattrs
 Extended file attribute flags as reported by
 .BR lsattr (1)
@@ -313,6 +316,9 @@ Year from audio metadata.
 .B exif_datetime
 Date and time recorded in EXIF data.
 .TP
+.BR exif_datetime_original " or " exif_dto
+Original date and time when the photo was taken.
+.TP
 .BR exif_altitude " or " exif_alt
 GPS altitude.
 .TP
@@ -344,13 +350,79 @@ Shutter speed.
 F-number.
 .TP
 .BR exif_iso_speed " or " exif_iso
-ISO speed.
+ISO speed (EXIF 2.3 ISOSpeed tag).
+.TP
+.BR exif_sensitivity " or " exif_photo_sensitivity
+Photographic sensitivity (ISO).
 .TP
 .BR exif_focal_length " or " exif_focal_len
 Focal length.
 .TP
 .BR exif_lens_make " / " exif_lens_model
 Lens manufacturer and model.
+.TP
+.BR exif_description " or " exif_desc
+Image description.
+.TP
+.B exif_artist
+Artist or photographer name.
+.TP
+.B exif_copyright
+Copyright information.
+.TP
+.B exif_orientation
+Image orientation.
+.TP
+.B exif_flash
+Flash status.
+.TP
+.B exif_color_space
+Color space.
+.TP
+.BR exif_exposure_program " or " exif_exp_program
+Exposure program.
+.TP
+.BR exif_exposure_bias " or " exif_exp_bias
+Exposure bias value.
+.TP
+.BR exif_white_balance " or " exif_wb
+White balance mode.
+.TP
+.B exif_metering_mode
+Metering mode.
+.TP
+.BR exif_scene_type " or " exif_scene
+Scene capture type.
+.TP
+.B exif_contrast
+Contrast setting.
+.TP
+.B exif_saturation
+Saturation setting.
+.TP
+.B exif_sharpness
+Sharpness setting.
+.TP
+.BR exif_body_serial " or " exif_serial
+Camera body serial number.
+.TP
+.B exif_lens_serial
+Lens serial number.
+.TP
+.BR exif_user_comment " or " exif_comment
+User comment.
+.TP
+.BR exif_image_width " or " exif_width
+Image width from EXIF.
+.TP
+.BR exif_image_height " or " exif_height
+Image height from EXIF.
+.TP
+.B exif_max_aperture
+Max aperture value of the lens.
+.TP
+.BR exif_digital_zoom " or " exif_dzoom
+Digital zoom ratio.
 .SS MIME and file type shortcuts
 .TP
 .B mime

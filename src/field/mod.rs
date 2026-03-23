@@ -1,5 +1,15 @@
 //! Defines the various fields available in the query language
 
+pub mod context;
+pub mod dispatch;
+mod content_handlers;
+mod exif_handlers;
+mod hash_handlers;
+mod media_handlers;
+mod metadata_handlers;
+mod mode_handlers;
+mod path_handlers;
+
 use std::fmt::Display;
 use std::fmt::Error;
 use std::fmt::Formatter;
@@ -436,6 +446,11 @@ fields! {
         @description = "Returns a boolean signifying whether the file has extended attributes"
         HasXattrs,
 
+        #[text = ["xattr_count"], data_type = "numeric"]
+        @weight = 2
+        @description = "Returns the count of extended attributes on the file or alternate data streams on Windows"
+        XattrCount,
+
         #[text = ["extattrs"]]
         @weight = 2
         @description = "Returns the extended file attributes as a string of chattr/lsattr flag letters"
@@ -541,6 +556,11 @@ fields! {
         @weight = 16
         @description = "Returns date and time of taken photo"
         ExifDateTime,
+
+        #[text = ["exif_datetime_original", "exif_dto"], data_type = "datetime"]
+        @weight = 16
+        @description = "Returns original date and time when the photo was taken"
+        ExifDateTimeOriginal,
         
         #[text = ["exif_altitude", "exif_alt"], data_type = "numeric"]
         @weight = 16
@@ -599,8 +619,13 @@ fields! {
         
         #[text = ["exif_iso_speed", "exif_iso"]]
         @weight = 16
-        @description = "Returns ISO speed of the photo taken"
+        @description = "Returns ISO speed of the photo taken (EXIF 2.3 ISOSpeed tag)"
         ExifIsoSpeed,
+
+        #[text = ["exif_sensitivity", "exif_photo_sensitivity"]]
+        @weight = 16
+        @description = "Returns photographic sensitivity (ISO) of the photo taken"
+        ExifPhotographicSensitivity,
         
         #[text = ["exif_focal_length", "exif_focal_len"], data_type = "numeric"]
         @weight = 16
@@ -616,6 +641,111 @@ fields! {
         @weight = 16
         @description = "Returns lens model used to take the photo"
         ExifLensModel,
+
+        #[text = ["exif_description", "exif_desc"]]
+        @weight = 16
+        @description = "Returns image description from EXIF metadata"
+        ExifDescription,
+
+        #[text = ["exif_artist"]]
+        @weight = 16
+        @description = "Returns the artist or photographer name"
+        ExifArtist,
+
+        #[text = ["exif_copyright"]]
+        @weight = 16
+        @description = "Returns the copyright information"
+        ExifCopyright,
+
+        #[text = ["exif_orientation"]]
+        @weight = 16
+        @description = "Returns the image orientation"
+        ExifOrientation,
+
+        #[text = ["exif_flash"]]
+        @weight = 16
+        @description = "Returns the flash status when the photo was taken"
+        ExifFlash,
+
+        #[text = ["exif_color_space"]]
+        @weight = 16
+        @description = "Returns the color space of the image"
+        ExifColorSpace,
+
+        #[text = ["exif_exposure_program", "exif_exp_program"]]
+        @weight = 16
+        @description = "Returns the exposure program used"
+        ExifExposureProgram,
+
+        #[text = ["exif_exposure_bias", "exif_exp_bias"], data_type = "numeric"]
+        @weight = 16
+        @description = "Returns the exposure bias value"
+        ExifExposureBias,
+
+        #[text = ["exif_white_balance", "exif_wb"]]
+        @weight = 16
+        @description = "Returns the white balance mode"
+        ExifWhiteBalance,
+
+        #[text = ["exif_metering_mode"]]
+        @weight = 16
+        @description = "Returns the metering mode"
+        ExifMeteringMode,
+
+        #[text = ["exif_scene_type", "exif_scene"]]
+        @weight = 16
+        @description = "Returns the scene capture type"
+        ExifSceneType,
+
+        #[text = ["exif_contrast"]]
+        @weight = 16
+        @description = "Returns the contrast setting"
+        ExifContrast,
+
+        #[text = ["exif_saturation"]]
+        @weight = 16
+        @description = "Returns the saturation setting"
+        ExifSaturation,
+
+        #[text = ["exif_sharpness"]]
+        @weight = 16
+        @description = "Returns the sharpness setting"
+        ExifSharpness,
+
+        #[text = ["exif_body_serial", "exif_serial"]]
+        @weight = 16
+        @description = "Returns the camera body serial number"
+        ExifBodySerial,
+
+        #[text = ["exif_lens_serial"]]
+        @weight = 16
+        @description = "Returns the lens serial number"
+        ExifLensSerial,
+
+        #[text = ["exif_user_comment", "exif_comment"]]
+        @weight = 16
+        @description = "Returns the user comment from EXIF metadata"
+        ExifUserComment,
+
+        #[text = ["exif_image_width", "exif_width"]]
+        @weight = 16
+        @description = "Returns the image width from EXIF metadata"
+        ExifImageWidth,
+
+        #[text = ["exif_image_height", "exif_height"]]
+        @weight = 16
+        @description = "Returns the image height from EXIF metadata"
+        ExifImageHeight,
+
+        #[text = ["exif_max_aperture"]]
+        @weight = 16
+        @description = "Returns the max aperture value of the lens"
+        ExifMaxAperture,
+
+        #[text = ["exif_digital_zoom", "exif_dzoom"], data_type = "numeric"]
+        @weight = 16
+        @description = "Returns the digital zoom ratio"
+        ExifDigitalZoom,
         
         #[text = ["mime"]]
         @weight = 16
