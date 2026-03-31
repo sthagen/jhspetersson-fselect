@@ -551,8 +551,13 @@ pub fn get_value(
             };
             match parse_datetime(&function_arg) {
                 Ok(date) => {
-                    let result = date.0 + chrono::Duration::days(days);
-                    Ok(Variant::from_string(&format_datetime(&result)))
+                    match chrono::Duration::try_days(days) {
+                        Some(duration) => {
+                            let result = date.0 + duration;
+                            Ok(Variant::from_string(&format_datetime(&result)))
+                        }
+                        None => Err(format!("Number of days out of range: {}", days)),
+                    }
                 }
                 _ => Ok(Variant::empty(VariantType::String)),
             }
@@ -567,8 +572,13 @@ pub fn get_value(
             };
             match parse_datetime(&function_arg) {
                 Ok(date) => {
-                    let result = date.0 - chrono::Duration::days(days);
-                    Ok(Variant::from_string(&format_datetime(&result)))
+                    match chrono::Duration::try_days(days) {
+                        Some(duration) => {
+                            let result = date.0 - duration;
+                            Ok(Variant::from_string(&format_datetime(&result)))
+                        }
+                        None => Err(format!("Number of days out of range: {}", days)),
+                    }
                 }
                 _ => Ok(Variant::empty(VariantType::String)),
             }
@@ -607,9 +617,8 @@ pub fn get_value(
                 } else {
                     chrono::NaiveDate::from_ymd_opt(y, m + 1, 1)
                 };
-                match last {
-                    Some(next_month) => {
-                        let last_day = next_month.pred_opt().unwrap();
+                match last.and_then(|d| d.pred_opt()) {
+                    Some(last_day) => {
                         Ok(Variant::from_string(&format_date(&last_day)))
                     }
                     None => Ok(Variant::empty(VariantType::String)),
@@ -833,11 +842,8 @@ pub fn get_value(
                         let limit = function_args.first().unwrap();
                         match limit.parse::<i64>() {
                             Ok(limit) => {
-                                if val >= limit {
-                                    Ok(Variant::from_int(val))
-                                } else {
-                                    Ok(Variant::from_int(rng.random_range(val..=limit)))
-                                }
+                                let (lo, hi) = if val <= limit { (val, limit) } else { (limit, val) };
+                                Ok(Variant::from_int(rng.random_range(lo..=hi)))
                             }
                             _ => Err(format!(
                                 "Could not parse limit argument of RANDOM function: {}",
@@ -938,7 +944,7 @@ pub fn get_aggregate_value(
 }
 
 functions! {
-    #[group_order = ["String", "Japanese string", "Numeric", "Datetime", "Aggregate", "Xattr", "Other"]]
+    #[group_order = ["String", "Japanese string", "Greek string", "Numeric", "Datetime", "Aggregate", "Xattr", "Other"]]
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
     pub enum Function {
         #[text = ["lower", "lowercase", "lcase"]]
@@ -2186,6 +2192,18 @@ mod tests {
     }
 
     #[test]
+    fn function_last_day_min_date() {
+        let function = Function::LastDay;
+        let function_arg = String::from("0001-01-01");
+        let function_args = vec![];
+        let entry = None;
+        let file_info = None;
+
+        let result = get_value(&function, function_arg, function_args, entry, &file_info);
+        assert!(result.is_ok(), "LAST_DAY should not panic on edge dates");
+    }
+
+    #[test]
     #[cfg(all(unix, feature = "users"))]
     fn function_current_uid() {
         let function = Function::CurrentUid;
@@ -2373,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn random_panics_on_inverted_range() {
+    fn random_inverted_range_returns_value_in_range() {
         let result = get_value(
             &Function::Random,
             String::from("5"),
@@ -2381,7 +2399,8 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_ok());
+        let val = result.unwrap().to_int();
+        assert!(val >= 3 && val <= 5, "RANDOM(5,3) should return value in [3,5], got {}", val);
     }
 
     #[test]
@@ -3154,6 +3173,14 @@ mod tests {
     }
 
     #[test]
+    fn greek_string_group_in_help() {
+        let groups = Function::get_groups();
+        assert!(groups.contains(&"Greek string"));
+        let descs = Function::get_names_and_descriptions();
+        assert!(descs.contains_key("Greek string"));
+    }
+
+    #[test]
     fn locate_i32_min_position_no_overflow() {
         let result = get_value(
             &Function::Locate,
@@ -3163,5 +3190,29 @@ mod tests {
             &None,
         );
         assert_eq!(result.unwrap().to_int(), 3);
+    }
+
+    #[test]
+    fn date_add_extreme_days_no_panic() {
+        let result = get_value(
+            &Function::DateAdd,
+            String::from("2024-01-01"),
+            vec![String::from("999999999999999")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn date_sub_extreme_days_no_panic() {
+        let result = get_value(
+            &Function::DateSub,
+            String::from("2024-01-01"),
+            vec![String::from("999999999999999")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
     }
 }

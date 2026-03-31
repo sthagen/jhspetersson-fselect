@@ -18,10 +18,10 @@ impl DimensionsExtractor for SvgDimensionsExtractor {
 
     fn try_read_dimensions(&self, path: &Path) -> io::Result<Option<Dimensions>> {
         let mut content = String::new();
-        for event in svg::open(path, &mut content).unwrap() {
+        for event in svg::open(path, &mut content)? {
             if let Event::Tag(SVG, _, attributes) = event {
                 if let (Some(width_value), Some(height_value)) =
-                    (attributes.get("height"), attributes.get("width"))
+                    (attributes.get("width"), attributes.get("height"))
                 {
                     let width = width_value
                         .parse::<usize>()
@@ -55,6 +55,26 @@ mod test {
                 height: 144,
             }),
         )
+    }
+
+    #[test]
+    fn test_non_square() -> Result<(), Box<dyn Error>> {
+        test_successful(
+            SvgDimensionsExtractor,
+            "image/rect.svg",
+            Some(Dimensions {
+                width: 200,
+                height: 100,
+            }),
+        )
+    }
+
+    #[test]
+    fn test_nonexistent_returns_error_not_panic() {
+        use crate::util::dimensions::DimensionsExtractor;
+        let extractor = SvgDimensionsExtractor;
+        let result = extractor.try_read_dimensions(std::path::Path::new("/nonexistent/file.svg"));
+        assert!(result.is_err());
     }
 
     #[test]

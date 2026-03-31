@@ -182,13 +182,17 @@ impl Variant {
 
     pub fn to_bool(&self) -> bool {
         if let Some(value) = self.bool_value {
-            value
-        } else if !self.string_value.is_empty() {
-            str_to_bool(&self.string_value).unwrap_or(false)
-        } else if let Some(int_value) = self.int_value {
-            int_value == 1
+            return value;
+        }
+        if !self.string_value.is_empty() {
+            if let Some(value) = str_to_bool(&self.string_value) {
+                return value;
+            }
+        }
+        if let Some(int_value) = self.int_value {
+            int_value != 0
         } else if let Some(float_value) = self.float_value {
-            float_value == 1.0
+            float_value != 0.0
         } else {
             false
         }
@@ -217,7 +221,7 @@ impl Display for Variant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, Timelike};
 
     #[test]
     fn from_int() {
@@ -361,6 +365,17 @@ mod tests {
     }
 
     #[test]
+    fn to_datetime_date_only_returns_day_range() {
+        let v = Variant::from_string(&String::from("2024-06-15"));
+        let (start, finish) = v.to_datetime().unwrap();
+        // Date-only should span midnight to 23:59:59
+        assert_eq!(start.hour(), 0);
+        assert_eq!(finish.hour(), 23);
+        assert_eq!(finish.minute(), 59);
+        assert_eq!(finish.second(), 59);
+    }
+
+    #[test]
     fn to_datetime_from_invalid_string() {
         let v = Variant::from_string(&String::from("not-a-date"));
         let result = v.to_datetime();
@@ -404,7 +419,9 @@ mod tests {
     #[test]
     fn to_bool_from_int_other() {
         let v = Variant::from_int(42);
-        assert_eq!(v.to_bool(), false);
+        assert_eq!(v.to_bool(), true, "non-zero int should be truthy");
+        let v = Variant::from_int(-1);
+        assert_eq!(v.to_bool(), true, "negative int should be truthy");
     }
 
     #[test]
@@ -417,6 +434,12 @@ mod tests {
     fn to_bool_from_float_zero() {
         let v = Variant::from_float(0.0);
         assert_eq!(v.to_bool(), false);
+    }
+
+    #[test]
+    fn to_bool_from_float_nonzero() {
+        let v = Variant::from_float(3.14);
+        assert_eq!(v.to_bool(), true, "non-zero float should be truthy");
     }
 
     #[test]

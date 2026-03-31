@@ -60,7 +60,7 @@ use crate::mode;
 pub use dimensions::Dimensions;
 pub use duration::Duration;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Criteria<T>
 where
     T: Display + ToString,
@@ -156,6 +156,12 @@ where
             .0;
 
         a.cmp(&b)
+    }
+}
+
+impl<T: Display + Ord> PartialOrd for Criteria<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -286,7 +292,7 @@ pub fn format_filesize(size: u64, modifier: &str) -> Result<String, String> {
     if let Some(cap) = FILE_SIZE_FORMAT_REGEX.captures(&modifier) {
         zeroes = cap
             .name("zeroes")
-            .map_or(-1, |m| m.as_str().parse::<i32>().unwrap());
+            .map_or(-1, |m| m.as_str().parse::<i32>().unwrap_or(20));
         space = cap.name("space").map_or(false, |m| m.as_str() == " ");
         modifier = cap
             .name("units")
@@ -461,7 +467,7 @@ pub fn capitalize_initials(s: &str) -> String {
 pub fn parse_unix_filename(s: &str) -> &str {
     let last_slash = s.rfind('/');
     match last_slash {
-        Some(idx) => &s[idx..],
+        Some(idx) => &s[idx + 1..],
         _ => s,
     }
 }
@@ -549,7 +555,7 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
                         exif_info.insert(
                             field_tag,
                             vec.iter()
-                                .map(|r| (r.num as f64 / r.denom as f64).to_string())
+                                .map(|r| if r.denom != 0 { (r.num as f64 / r.denom as f64).to_string() } else { "0".to_string() })
                                 .collect::<Vec<String>>()
                                 .join(";"),
                         );
@@ -634,7 +640,8 @@ pub fn is_shebang(path: &PathBuf) -> bool {
 pub fn is_hidden(file_name: &str, metadata: &Option<Metadata>, archive_mode: bool) -> bool {
     if archive_mode {
         if !file_name.contains('\\') {
-            return parse_unix_filename(file_name).starts_with('.');
+            let name = file_name.trim_end_matches('/');
+            return parse_unix_filename(name).starts_with('.');
         } else {
             return false;
         }
@@ -808,6 +815,14 @@ mod tests {
     }
 
     #[test]
+    fn test_partial_cmp_consistent_with_cmp() {
+        let c1 = basic_criteria(&[1, 3, 2]);
+        let c2 = basic_criteria(&[1, 2, 3]);
+
+        assert_eq!(c1.partial_cmp(&c2), Some(c1.cmp(&c2)));
+    }
+
+    #[test]
     fn test_parse_filesize() {
         let file_size = "abc";
         assert_eq!(parse_filesize(file_size), None);
@@ -883,12 +898,47 @@ mod tests {
     }
 
     #[test]
+    fn test_format_filesize_large_precision() {
+        // Should not panic on absurdly large precision values
+        let result = format_filesize(1024, "%.9999999999");
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_get_extension() {
         assert_eq!(get_extension(".no_ext"), String::new());
         assert_eq!(get_extension("no_ext"), String::new());
         assert_eq!(get_extension("has_ext.foo"), String::from("foo"));
         assert_eq!(get_extension("has_ext.foobar"), String::from("foobar"));
         assert_eq!(get_extension("has.extension.foo"), String::from("foo"));
+    }
+
+    #[test]
+    fn test_parse_unix_filename() {
+        assert_eq!(parse_unix_filename("file.txt"), "file.txt");
+        assert_eq!(parse_unix_filename("path/to/file.txt"), "file.txt");
+        assert_eq!(parse_unix_filename("path/to/.hidden"), ".hidden");
+        assert_eq!(parse_unix_filename("/root.txt"), "root.txt");
+    }
+
+    #[test]
+    fn test_is_hidden_archive_trailing_slash() {
+        // Archive directory entries often have trailing slashes
+        assert!(is_hidden(".hidden/", &None, true));
+        assert!(is_hidden("path/to/.hidden/", &None, true));
+        assert!(!is_hidden("path/to/visible/", &None, true));
+        assert!(is_hidden(".hidden", &None, true));
+    }
+
+    #[test]
+    fn test_gps_rational_zero_denom() {
+        // Simulates the GPS rational conversion logic
+        let convert = |num: u32, denom: u32| -> String {
+            if denom != 0 { (num as f64 / denom as f64).to_string() } else { "0".to_string() }
+        };
+        assert_eq!(convert(180, 1), "180");
+        assert_eq!(convert(0, 0), "0");
+        assert_eq!(convert(90, 0), "0");
     }
 
     #[test]

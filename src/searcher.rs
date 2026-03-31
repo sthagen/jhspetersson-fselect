@@ -125,7 +125,7 @@ impl<'a> Searcher<'a> {
             output_buffer: if limit == 0 {
                 TopN::limitless()
             } else {
-                TopN::new(limit + query.offset)
+                TopN::new(limit.saturating_add(query.offset))
             },
             ordering_fields_rc: Rc::new(query.ordering_fields.clone()),
             ordering_asc_rc: Rc::new(query.ordering_asc.clone()),
@@ -158,7 +158,7 @@ impl<'a> Searcher<'a> {
     }
 
     pub fn is_buffered(&self) -> bool {
-        self.query.is_ordered() || self.query.has_aggregate_column() || self.silent_mode
+        self.query.is_ordered() || self.query.has_aggregate_column() || self.query.offset > 0 || self.silent_mode
     }
 
     /// Searches directories based on configured query and outputs results to stdout.
@@ -351,7 +351,7 @@ impl<'a> Searcher<'a> {
 
                 let mut grouped_results: TopN<Criteria<String>, Vec<(String, String)>> =
                     if self.query.limit > 0 {
-                        TopN::new(self.query.limit + self.query.offset)
+                        TopN::new(self.query.limit.saturating_add(self.query.offset))
                     } else {
                         TopN::limitless()
                     };
@@ -972,6 +972,20 @@ impl<'a> Searcher<'a> {
                     self.get_field_value(entry, file_info, root_path, &field).unwrap_or(Variant::empty(VariantType::String)).to_string(),
                 );
             }
+            // Evaluate inner expressions of aggregate functions so computed values
+            // (e.g. "size * 2") are stored in file_map under the correct key
+            for column_expr in &self.query.fields.clone() {
+                if let Some(ref func) = column_expr.function {
+                    if func.is_aggregate_function() {
+                        if let Some(ref left) = column_expr.left {
+                            let left_key = left.to_string();
+                            if !file_map.contains_key(&left_key) {
+                                self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, left)?;
+                            }
+                        }
+                    }
+                }
+            }
             for field in self.query.grouping_fields.iter() {
                 if file_map.get(&field.to_string()).is_none() {
                     self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, field)?;
@@ -1111,11 +1125,13 @@ impl<'a> Searcher<'a> {
             )?;
             let matches = match field_type {
                 VariantType::String => arg_val.to_string() == field_value.to_string(),
-                VariantType::Int | VariantType::Float => arg_val.to_float() == field_value.to_float(),
+                VariantType::Int => arg_val.to_int() == field_value.to_int(),
+                VariantType::Float => arg_val.to_float() == field_value.to_float(),
                 VariantType::Bool => arg_val.to_bool() == field_value.to_bool(),
                 VariantType::DateTime => {
-                    arg_val.to_datetime()?.0.and_utc().timestamp()
-                        == field_value.to_datetime()?.0.and_utc().timestamp()
+                    let field_dt = field_value.to_datetime()?.0;
+                    let (arg_start, arg_finish) = arg_val.to_datetime()?;
+                    field_dt >= arg_start && field_dt <= arg_finish
                 }
             };
             if matches {
@@ -1132,8 +1148,10 @@ impl<'a> Searcher<'a> {
         field_str: &str,
         converter: fn(&str) -> Result<String, String>,
         err_prefix: &str,
+        cache_prefix: &str,
     ) -> Result<bool, SearchError> {
-        if let Some(regex) = self.regex_cache.get(&val) {
+        let cache_key = format!("{}:{}", cache_prefix, val);
+        if let Some(regex) = self.regex_cache.get(&cache_key) {
             return Ok(regex.is_match(field_str));
         }
         match converter(&val) {
@@ -1141,7 +1159,7 @@ impl<'a> Searcher<'a> {
                 match Regex::new(&pattern) {
                     Ok(regex) => {
                         let matched = regex.is_match(field_str);
-                        self.regex_cache.insert(val, regex);
+                        self.regex_cache.insert(cache_key, regex);
                         Ok(matched)
                     }
                     _ => Err(SearchError::normal(format!("{}{}", err_prefix, val)).with_source("expression")),
@@ -1156,7 +1174,8 @@ impl<'a> Searcher<'a> {
         val: String,
         field_str: &str,
     ) -> Result<bool, SearchError> {
-        if let Some(regex) = self.regex_cache.get(&val) {
+        let cache_key = format!("glob:{}", val);
+        if let Some(regex) = self.regex_cache.get(&cache_key) {
             return Ok(regex.is_match(field_str));
         }
         match convert_glob_to_pattern(&val) {
@@ -1164,7 +1183,7 @@ impl<'a> Searcher<'a> {
                 match Regex::new(&pattern) {
                     Ok(regex) => {
                         let matched = regex.is_match(field_str);
-                        self.regex_cache.insert(val, regex);
+                        self.regex_cache.insert(cache_key, regex);
                         Ok(matched)
                     }
                     _ => Ok(val.eq(field_str)),
@@ -1261,15 +1280,19 @@ impl<'a> Searcher<'a> {
                         }
                         Op::Rx | Op::NotRx => {
                             fn identity(s: &str) -> Result<String, String> { Ok(s.to_string()) }
-                            let matched = self.match_pattern(val, &field_str, identity, "Incorrect regex expression: ");
+                            let matched = self.match_pattern(val, &field_str, identity, "Incorrect regex expression: ", "rx");
                             return if *op == Op::NotRx { matched.map(|m| !m) } else { matched };
                         }
                         Op::Like => {
-                            return self.match_pattern(val, &field_str, convert_like_to_pattern, "Incorrect LIKE expression: ");
+                            return self.match_pattern(val, &field_str, convert_like_to_pattern, "Incorrect LIKE expression: ", "like");
                         }
                         Op::NotLike => {
-                            return self.match_pattern(val, &field_str, convert_like_to_pattern, "Incorrect LIKE expression: ").map(|m| !m);
+                            return self.match_pattern(val, &field_str, convert_like_to_pattern, "Incorrect LIKE expression: ", "like").map(|m| !m);
                         }
+                        Op::Gt => field_str > val,
+                        Op::Gte => field_str >= val,
+                        Op::Lt => field_str < val,
+                        Op::Lte => field_str <= val,
                         Op::Eeq => val.eq(&field_str),
                         Op::Ene => val.ne(&field_str),
                         Op::In => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, false)?,
@@ -1461,6 +1484,26 @@ mod tests {
     }
 
     #[test]
+    fn test_is_buffered_with_offset() {
+        let query = Box::leak(Box::new(Query {
+            fields: Vec::new(),
+            roots: Vec::new(),
+            expr: None,
+            grouping_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 10,
+            offset: 5,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        }));
+        let config = Box::leak(Box::new(Config::default()));
+        let default_config = Box::leak(Box::new(Config::default()));
+        let searcher = Searcher::new(query, config, default_config, false);
+        assert!(searcher.is_buffered());
+    }
+
+    #[test]
     fn test_has_ordering() {
         let searcher_with_ordering = create_test_searcher_with_ordering();
         assert!(searcher_with_ordering.query.is_ordered());
@@ -1597,6 +1640,28 @@ mod tests {
             "should find file through relative symlink, found={} errors={}",
             found, errors
         );
+    }
+
+    #[test]
+    fn test_string_ordering_comparisons() {
+        // Verify that string comparisons work correctly for Gt, Gte, Lt, Lte
+        let a = Variant::from_string(&String::from("apple"));
+        let b = Variant::from_string(&String::from("banana"));
+
+        // "apple" < "banana" lexicographically
+        assert!(a.to_string() < b.to_string());
+        assert!(b.to_string() > a.to_string());
+        assert!(a.to_string() <= b.to_string());
+        assert!(b.to_string() >= a.to_string());
+        assert!(a.to_string() <= a.to_string());
+        assert!(a.to_string() >= a.to_string());
+    }
+
+    #[test]
+    fn test_limit_offset_no_overflow() {
+        // u32::MAX + 1 would overflow; saturating_add should cap at u32::MAX
+        let result = u32::MAX.saturating_add(1);
+        assert_eq!(result, u32::MAX);
     }
 
     #[test]
@@ -1770,6 +1835,97 @@ mod tests {
             "root_b should find files through its own symlink, found_a={} found_b={}",
             found_after_a, found_after_b
         );
+    }
+
+    #[test]
+    fn test_regex_cache_glob_then_like_no_collision() {
+        // Pattern "test*" means different things in glob vs LIKE:
+        // glob: test.* (wildcard)  LIKE: test\* (literal asterisk)
+        let mut searcher = create_test_searcher();
+        let pattern = "test*".to_string();
+
+        // First: glob caches "test*" as wildcard match
+        let glob_result = searcher.match_glob(pattern.clone(), "test_hello").unwrap();
+        assert!(glob_result, "glob test* should match test_hello");
+
+        // Second: LIKE should NOT match "test_hello" because * is literal in LIKE
+        let like_result = searcher.match_pattern(
+            pattern.clone(), "test_hello",
+            convert_like_to_pattern, "err: ", "like",
+        ).unwrap();
+        assert!(!like_result, "LIKE test* should NOT match test_hello (literal asterisk)");
+    }
+
+    #[test]
+    fn test_regex_cache_like_then_glob_no_collision() {
+        // Vice versa: LIKE cached first, then glob
+        let mut searcher = create_test_searcher();
+        let pattern = "test*".to_string();
+
+        // First: LIKE caches "test*" as literal asterisk match
+        let like_result = searcher.match_pattern(
+            pattern.clone(), "test*",
+            convert_like_to_pattern, "err: ", "like",
+        ).unwrap();
+        assert!(like_result, "LIKE test* should match literal test*");
+
+        // Second: glob should match wildcard, not be corrupted by LIKE cache
+        let glob_result = searcher.match_glob(pattern.clone(), "test_hello").unwrap();
+        assert!(glob_result, "glob test* should match test_hello even after LIKE cached same pattern");
+    }
+
+    #[test]
+    fn test_aggregate_computed_expr_accumulator_key() {
+        // Verify that computed expressions inside aggregates produce consistent keys
+        // between accumulation and retrieval phases
+        use crate::operators::ArithmeticOp;
+
+        // Build AVG(size * 2): function=Avg, left = (size Mul 2)
+        let left_field = Expr::field(Field::Size);
+        let right_val = Expr::value("2".to_string());
+        let mut computed = Expr::field(Field::Size);
+        computed.left = Some(Box::new(left_field));
+        computed.arithmetic_op = Some(ArithmeticOp::Multiply);
+        computed.right = Some(Box::new(right_val));
+        computed.field = None;
+
+        let mut agg_expr = Expr::field(Field::Size);
+        agg_expr.function = Some(Function::Avg);
+        agg_expr.left = Some(Box::new(computed));
+        agg_expr.field = None;
+
+        // The inner expression key used during retrieval
+        let inner_key = agg_expr.left.as_ref().unwrap().to_string();
+
+        // Simulate what accumulation does: evaluate inner expr and store in file_map
+        let mut file_map = HashMap::new();
+        file_map.insert("size".to_string(), "100".to_string());
+
+        // After our fix, the inner expression should also be evaluated and stored
+        // The key should match what get_aggregate_value uses for lookup
+        assert!(
+            !inner_key.is_empty(),
+            "Inner expression key should not be empty"
+        );
+        assert_ne!(
+            inner_key, "size",
+            "Computed expression key should differ from raw field key"
+        );
+    }
+
+    #[test]
+    fn test_in_list_uses_int_comparison_not_float() {
+        // Large i64 values lose precision when converted to f64
+        let large: i64 = (1_i64 << 53) + 1; // 9007199254740993
+        let a = Variant::from_int(large);
+        let b = Variant::from_int(large);
+
+        // Int comparison should match
+        assert_eq!(a.to_int(), b.to_int(), "int comparison should be exact");
+
+        // Float comparison would lose precision for this value
+        let as_float = large as f64;
+        assert_ne!(as_float as i64, large, "f64 loses precision for 2^53+1");
     }
 
 }

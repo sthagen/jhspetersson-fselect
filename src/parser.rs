@@ -620,7 +620,9 @@ impl <'a> Parser<'a> {
 
         let lexeme = self.next_lexeme();
         let mut result = match lexeme {
-            Some(Lexeme::Operator(s)) if s.as_str() == "between" => {
+            Some(Lexeme::Operator(s)) if s.as_str() == "between" || s.as_str() == "notbetween" => {
+                let is_negated = not ^ (s.as_str() == "notbetween");
+
                 let left_between = self.parse_add_sub()?;
 
                 let and_lexeme = self.next_lexeme();
@@ -632,7 +634,7 @@ impl <'a> Parser<'a> {
 
                 let left_expr = Expr::op(
                     left.clone().unwrap(),
-                    match not {
+                    match is_negated {
                         false => Op::Gte,
                         true => Op::Lt,
                     },
@@ -640,7 +642,7 @@ impl <'a> Parser<'a> {
                 );
                 let right_expr = Expr::op(
                     left.unwrap(),
-                    match not {
+                    match is_negated {
                         false => Op::Lte,
                         true => Op::Gt,
                     },
@@ -649,14 +651,14 @@ impl <'a> Parser<'a> {
 
                 Ok(Some(Expr::logical_op(
                     left_expr,
-                    match not {
+                    match is_negated {
                         false => LogicalOp::And,
                         true => LogicalOp::Or,
                     },
                     right_expr,
                 )))
             }
-            Some(Lexeme::Operator(s)) if s.as_str() == "in" || s.as_str() == "exists" => {
+            Some(Lexeme::Operator(s)) if s.as_str() == "in" || s.as_str() == "exists" || s.as_str() == "notin" || s.as_str() == "notexists" => {
                 let list = self.parse_list()?;
                 let op = Op::from_with_not(s, not);
                 Ok(Some(Expr::op(
@@ -2789,6 +2791,45 @@ mod tests {
         assert!(!p2.there_are_remaining_lexemes());
 
         assert_eq!(query.fields, query2.fields);
+    }
+
+    #[test]
+    fn notbetween_operator() {
+        let query = "select name from /test where size notbetween 100 and 200";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_ok());
+        let query = result.unwrap();
+        assert!(query.expr.is_some());
+    }
+
+    #[test]
+    fn not_notbetween_double_negation() {
+        // "not notbetween" = double negation = "between"
+        let q1 = "select name from /test where size not notbetween 100 and 200";
+        let mut lexer1 = Lexer::new(vec![q1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let result1 = p1.parse(false).unwrap();
+
+        let q2 = "select name from /test where size between 100 and 200";
+        let mut lexer2 = Lexer::new(vec![q2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let result2 = p2.parse(false).unwrap();
+
+        // Both should produce the same expression tree
+        assert_eq!(format!("{:?}", result1.expr), format!("{:?}", result2.expr));
+    }
+
+    #[test]
+    fn notin_operator() {
+        let query = "select name from /test where name notin (a, b, c)";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_ok());
+        let query = result.unwrap();
+        assert!(query.expr.is_some());
     }
 
     #[test]

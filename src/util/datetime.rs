@@ -78,24 +78,20 @@ pub fn parse_datetime(s: &str) -> Result<(NaiveDateTime, NaiveDateTime), String>
 
             match Local.with_ymd_and_hms(year, month, day, 0, 0, 0) {
                 LocalResult::Single(date) => {
-                    let start = date
-                        .naive_local()
+                    let base = date.naive_local();
+                    let start = base
                         .with_hour(hour_start)
-                        .unwrap()
-                        .with_minute(min_start)
-                        .unwrap()
-                        .with_second(sec_start)
-                        .unwrap();
-                    let finish = date
-                        .naive_local()
+                        .and_then(|d| d.with_minute(min_start))
+                        .and_then(|d| d.with_second(sec_start));
+                    let finish = base
                         .with_hour(hour_finish)
-                        .unwrap()
-                        .with_minute(min_finish)
-                        .unwrap()
-                        .with_second(sec_finish)
-                        .unwrap();
+                        .and_then(|d| d.with_minute(min_finish))
+                        .and_then(|d| d.with_second(sec_finish));
 
-                    Ok((start, finish))
+                    match (start, finish) {
+                        (Some(s), Some(f)) => Ok((s, f)),
+                        _ => Err("Error parsing date/time value: ".to_string() + s),
+                    }
                 }
                 _ => Err("Error converting date/time to local: ".to_string() + s),
             }
@@ -129,12 +125,16 @@ pub fn parse_datetime(s: &str) -> Result<(NaiveDateTime, NaiveDateTime), String>
                     _ => Err("Error parsing date/time value: ".to_string() + s),
                 }
             } else if s.len() >= 2 && (s.starts_with("+") || s.starts_with("-")) {
-                let days = s.parse::<i64>().unwrap();
-                let date = Local::now().date_naive() + Duration::days(days);
-                let start = date.and_hms_opt(0, 0, 0).unwrap();
-                let finish = date.and_hms_opt(23, 59, 59).unwrap();
+                match s.parse::<i64>() {
+                    Ok(days) => {
+                        let date = Local::now().date_naive() + Duration::days(days);
+                        let start = date.and_hms_opt(0, 0, 0).unwrap();
+                        let finish = date.and_hms_opt(23, 59, 59).unwrap();
 
-                Ok((start, finish))
+                        Ok((start, finish))
+                    }
+                    Err(_) => Err("Error parsing date/time value: ".to_string() + s),
+                }
             } else {
                 Err("Error parsing date/time value: ".to_string() + s)
             }
@@ -143,20 +143,11 @@ pub fn parse_datetime(s: &str) -> Result<(NaiveDateTime, NaiveDateTime), String>
 }
 
 pub fn to_local_datetime(dt: &zip::DateTime) -> NaiveDateTime {
-    Local::now()
-        .naive_local()
-        .with_year(dt.year() as i32)
-        .unwrap()
-        .with_month(dt.month() as u32)
-        .unwrap()
-        .with_day(dt.day() as u32)
-        .unwrap()
-        .with_hour(dt.hour() as u32)
-        .unwrap()
-        .with_minute(dt.minute() as u32)
-        .unwrap()
-        .with_second(dt.second() as u32)
-        .unwrap()
+    let date = NaiveDate::from_ymd_opt(dt.year() as i32, dt.month() as u32, dt.day() as u32)
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(dt.year() as i32, 1, 1).unwrap());
+    let time = NaiveTime::from_hms_opt(dt.hour() as u32, dt.minute() as u32, dt.second() as u32)
+        .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+    NaiveDateTime::new(date, time)
 }
 
 pub fn format_datetime(dt: &NaiveDateTime) -> String {
@@ -248,6 +239,31 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Error parsing date/time value: invalid-date");
+    }
+
+    #[test]
+    fn test_parse_out_of_range_time() {
+        assert!(parse_datetime("2024-01-01 25:00:00").is_err());
+        assert!(parse_datetime("2024-01-01 12:61:00").is_err());
+        assert!(parse_datetime("2024-01-01 12:00:99").is_err());
+    }
+
+    #[test]
+    fn test_parse_non_numeric_plus_minus() {
+        assert!(parse_datetime("+abc").is_err());
+        assert!(parse_datetime("-xyz").is_err());
+    }
+
+    #[test]
+    fn test_to_local_datetime_feb() {
+        // Regression: previously panicked when current day > days in target month
+        let dt = zip::DateTime::from_date_and_time(2023, 2, 15, 10, 30, 0).unwrap();
+        let result = to_local_datetime(&dt);
+        assert_eq!(result.year(), 2023);
+        assert_eq!(result.month(), 2);
+        assert_eq!(result.day(), 15);
+        assert_eq!(result.hour(), 10);
+        assert_eq!(result.minute(), 30);
     }
 
     #[test]
