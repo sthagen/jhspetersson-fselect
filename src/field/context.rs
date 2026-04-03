@@ -19,6 +19,11 @@ pub struct FileMetadataState {
     pub(crate) duration: Option<Option<Duration>>,
     pub(crate) mp3_metadata: Option<Option<MP3Metadata>>,
     pub(crate) exif_metadata: Option<Option<HashMap<String, String>>>,
+    pub(crate) mime_type: Option<Option<String>>,
+    pub(crate) sha1_hash: Option<String>,
+    pub(crate) sha256_hash: Option<String>,
+    pub(crate) sha512_hash: Option<String>,
+    pub(crate) sha3_hash: Option<String>,
 }
 
 impl FileMetadataState {
@@ -30,6 +35,11 @@ impl FileMetadataState {
             duration: None,
             mp3_metadata: None,
             exif_metadata: None,
+            mime_type: None,
+            sha1_hash: None,
+            sha256_hash: None,
+            sha512_hash: None,
+            sha3_hash: None,
         }
     }
 
@@ -89,6 +99,46 @@ impl FileMetadataState {
             .map(|v| Variant::from_string(v))
     }
 
+    pub fn update_mime_type(&mut self, entry: &DirEntry) {
+        if self.mime_type.is_none() {
+            self.mime_type = Some(
+                tree_magic_mini::from_filepath(&entry.path()).map(String::from)
+            );
+        }
+    }
+
+    pub fn get_mime_type(&self) -> Option<&str> {
+        self.mime_type.as_ref().and_then(|o| o.as_deref())
+    }
+
+    pub fn get_or_compute_sha1(&mut self, entry: &DirEntry) -> &str {
+        if self.sha1_hash.is_none() {
+            self.sha1_hash = Some(get_sha1_file_hash(entry));
+        }
+        self.sha1_hash.as_deref().unwrap()
+    }
+
+    pub fn get_or_compute_sha256(&mut self, entry: &DirEntry) -> &str {
+        if self.sha256_hash.is_none() {
+            self.sha256_hash = Some(get_sha256_file_hash(entry));
+        }
+        self.sha256_hash.as_deref().unwrap()
+    }
+
+    pub fn get_or_compute_sha512(&mut self, entry: &DirEntry) -> &str {
+        if self.sha512_hash.is_none() {
+            self.sha512_hash = Some(get_sha512_file_hash(entry));
+        }
+        self.sha512_hash.as_deref().unwrap()
+    }
+
+    pub fn get_or_compute_sha3(&mut self, entry: &DirEntry) -> &str {
+        if self.sha3_hash.is_none() {
+            self.sha3_hash = Some(get_sha3_512_file_hash(entry));
+        }
+        self.sha3_hash.as_deref().unwrap()
+    }
+
     pub fn update_dimensions(&mut self, entry: &DirEntry) {
         if self.dimensions.is_none() {
             self.dimensions = Some(get_dimensions(entry.path()));
@@ -138,6 +188,11 @@ mod tests {
         assert!(state.duration.is_none());
         assert!(state.mp3_metadata.is_none());
         assert!(state.exif_metadata.is_none());
+        assert!(state.mime_type.is_none());
+        assert!(state.sha1_hash.is_none());
+        assert!(state.sha256_hash.is_none());
+        assert!(state.sha512_hash.is_none());
+        assert!(state.sha3_hash.is_none());
     }
 
     #[test]
@@ -150,6 +205,11 @@ mod tests {
         state.duration = Some(None);
         state.mp3_metadata = Some(None);
         state.exif_metadata = Some(None);
+        state.mime_type = Some(None);
+        state.sha1_hash = Some(String::new());
+        state.sha256_hash = Some(String::new());
+        state.sha512_hash = Some(String::new());
+        state.sha3_hash = Some(String::new());
 
         state.clear();
 
@@ -159,5 +219,10 @@ mod tests {
         assert!(state.duration.is_none());
         assert!(state.mp3_metadata.is_none());
         assert!(state.exif_metadata.is_none());
+        assert!(state.mime_type.is_none());
+        assert!(state.sha1_hash.is_none());
+        assert!(state.sha256_hash.is_none());
+        assert!(state.sha512_hash.is_none());
+        assert!(state.sha3_hash.is_none());
     }
 }

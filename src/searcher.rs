@@ -69,6 +69,7 @@ pub struct Searcher<'a> {
     current_root_dir: PathBuf,
 
     fms: FileMetadataState,
+    file_map: HashMap<String, String>,
     conforms_map: HashMap<String, String>,
     subquery_cache: HashMap<String, Vec<String>>,
     silent_mode: bool,
@@ -149,6 +150,7 @@ impl<'a> Searcher<'a> {
             current_root_dir: PathBuf::new(),
 
             fms: FileMetadataState::new(),
+            file_map: HashMap::new(),
             conforms_map: HashMap::new(),
             subquery_cache: HashMap::new(),
             silent_mode: false,
@@ -380,22 +382,24 @@ impl<'a> Searcher<'a> {
                 }
 
                 let mut first = true;
+                let mut stdout = std::io::stdout().lock();
                 for items in grouped_results.iter_values().skip(self.query.offset as usize) {
                     let mut buf = WritableBuffer::new();
                     self.results_writer.write_row(&mut buf, items.clone())?;
                     let rendered = String::from(buf);
                     if !self.silent_mode {
                         if !first {
-                            try_output!(self.results_writer.write_row_separator(&mut std::io::stdout()), Ok(()));
+                            try_output!(self.results_writer.write_row_separator(&mut stdout), Ok(()));
                         }
                         first = false;
-                        try_output!(write!(std::io::stdout(), "{}", &rendered), Ok(()));
+                        try_output!(write!(stdout, "{}", &rendered), Ok(()));
                     }
                     self.output_buffer.insert(
                         Criteria::new(Rc::new(vec![]), vec![], Rc::new(vec![])),
                         rendered,
                     );
                 }
+                drop(stdout);
             } else {
                 let mut buf = WritableBuffer::new();
                 let mut items: Vec<(String, String)> = Vec::new();
@@ -429,19 +433,22 @@ impl<'a> Searcher<'a> {
                 }
             }
         } else if self.is_buffered() && !self.silent_mode {
+            let mut stdout = std::io::stdout().lock();
             let mut first = true;
             for piece in self.output_buffer.iter_values().skip(self.query.offset as usize) {
                 if first {
                     first = false;
                 } else {
-                    try_output!(self.results_writer.write_row_separator(&mut std::io::stdout()), Ok(()));
+                    try_output!(self.results_writer.write_row_separator(&mut stdout), Ok(()));
                 }
-                try_output!(write!(std::io::stdout(), "{}", piece), Ok(()));
+                try_output!(write!(stdout, "{}", piece), Ok(()));
             }
+            drop(stdout);
         }
 
         if !self.silent_mode {
-            self.results_writer.write_footer(&mut std::io::stdout())?;
+            let mut stdout = std::io::stdout().lock();
+            self.results_writer.write_footer(&mut stdout)?;
         }
 
         let completion_time = std::time::Instant::now();
@@ -930,8 +937,14 @@ impl<'a> Searcher<'a> {
     fn check_file(&mut self, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>) -> Result<(), SearchError> {
         self.fms.clear();
 
-        let mut file_map = HashMap::new();
+        let mut file_map = std::mem::take(&mut self.file_map);
+        file_map.clear();
+        let result = self.check_file_inner(entry, root_path, file_info, &mut file_map);
+        self.file_map = file_map;
+        result
+    }
 
+    fn check_file_inner(&mut self, entry: &DirEntry, root_path: &Path, file_info: &Option<FileInfo>, file_map: &mut HashMap<String, String>) -> Result<(), SearchError> {
         if let Some(ref current_alias) = self.current_alias.clone() {
             {
                 let mut context = self.record_context.borrow_mut();
@@ -973,22 +986,29 @@ impl<'a> Searcher<'a> {
                 );
             }
             // Evaluate inner expressions of aggregate functions so computed values
-            // (e.g. "size * 2") are stored in file_map under the correct key
-            for column_expr in &self.query.fields.clone() {
-                if let Some(ref func) = column_expr.function {
-                    if func.is_aggregate_function() {
-                        if let Some(ref left) = column_expr.left {
-                            let left_key = left.to_string();
-                            if !file_map.contains_key(&left_key) {
-                                self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, left)?;
+            // (e.g. "size * 2") are stored in file_map under the correct key.
+            // Collect keys first to avoid cloning query.fields on every file.
+            let aggregate_inner_exprs: Vec<_> = self.query.fields.iter()
+                .filter_map(|column_expr| {
+                    if let Some(ref func) = column_expr.function {
+                        if func.is_aggregate_function() {
+                            if let Some(ref left) = column_expr.left {
+                                let left_key = left.to_string();
+                                if !file_map.contains_key(&left_key) {
+                                    return Some(left.clone());
+                                }
                             }
                         }
                     }
-                }
+                    None
+                })
+                .collect();
+            for left in &aggregate_inner_exprs {
+                self.get_column_expr_value(Some(entry), file_info, root_path, file_map, None, left)?;
             }
             for field in self.query.grouping_fields.iter() {
                 if file_map.get(&field.to_string()).is_none() {
-                    self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, field)?;
+                    self.get_column_expr_value(Some(entry), file_info, root_path, file_map, None, field)?;
                 }
             }
             let group_key: Vec<String> = self.query.grouping_fields.iter()
@@ -996,7 +1016,7 @@ impl<'a> Searcher<'a> {
                 .collect();
             let accumulator = self.accumulators.entry(group_key).or_default();
             accumulator.increment_count();
-            for (key, value) in &file_map {
+            for (key, value) in file_map.iter() {
                 accumulator.push(key, value);
             }
             return Ok(());
@@ -1016,7 +1036,7 @@ impl<'a> Searcher<'a> {
 
         for field in self.query.fields.iter() {
             let record =
-                self.get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, field)?;
+                self.get_column_expr_value(Some(entry), file_info, root_path, file_map, None, field)?;
 
             let value = match self.use_colors && field.contains_colorized() {
                 true => self.colorize(&record.to_string()),
@@ -1035,7 +1055,7 @@ impl<'a> Searcher<'a> {
             criteria[idx] = match file_map.get(&field.to_string()) {
                 Some(record) => record.clone(),
                 None => self
-                    .get_column_expr_value(Some(entry), file_info, root_path, &mut file_map, None, field)?
+                    .get_column_expr_value(Some(entry), file_info, root_path, file_map, None, field)?
                     .to_string(),
             }
         }
@@ -1235,7 +1255,6 @@ impl<'a> Searcher<'a> {
                     return Err(e);
                 }
             };
-            temp_map.clear();
             let value = match op {
                 Op::In | Op::NotIn => Variant::empty(VariantType::String),
                 _ => {
@@ -1247,10 +1266,7 @@ impl<'a> Searcher<'a> {
                         None,
                         expr.right.as_ref().unwrap(),
                     ) {
-                        Ok(v) => {
-                            temp_map.clear();
-                            v
-                        }
+                        Ok(v) => v,
                         Err(e) => {
                             self.conforms_map = temp_map;
                             return Err(e);

@@ -12,7 +12,8 @@ pub fn handle_line_count(ctx: &mut FieldContext) -> Result<Variant, SearchError>
 }
 
 pub fn handle_mime(ctx: &mut FieldContext) -> Result<Variant, SearchError> {
-    if let Some(mime) = tree_magic_mini::from_filepath(&ctx.entry.path()) {
+    ctx.fms.update_mime_type(ctx.entry);
+    if let Some(mime) = ctx.fms.get_mime_type() {
         return Ok(Variant::from_string(&String::from(mime)));
     }
     Ok(Variant::empty(VariantType::String))
@@ -26,7 +27,8 @@ pub fn handle_is_binary_or_text(ctx: &mut FieldContext, field: &Field) -> Result
         }
     }
 
-    if let Some(mime) = tree_magic_mini::from_filepath(&ctx.entry.path()) {
+    ctx.fms.update_mime_type(ctx.entry);
+    if let Some(mime) = ctx.fms.get_mime_type() {
         let is_text = is_text_mime(mime);
         let result = matches!(field, Field::IsText) == is_text;
         return Ok(Variant::from_bool(result));
@@ -50,7 +52,7 @@ pub fn handle_is_type(ctx: &mut FieldContext, field: &Field) -> Result<Variant, 
         Field::IsImage => check_extension(name, &ctx.config.is_image, &ctx.default_config.is_image),
         Field::IsSource => check_extension(name, &ctx.config.is_source, &ctx.default_config.is_source),
         Field::IsVideo => check_extension(name, &ctx.config.is_video, &ctx.default_config.is_video),
-        _ => unreachable!(),
+        _ => return Err(SearchError::fatal(format!("Unexpected field in handle_is_type: {:?}", field))),
     };
     Ok(Variant::from_bool(result))
 }
