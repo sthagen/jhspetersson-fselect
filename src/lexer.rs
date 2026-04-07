@@ -42,11 +42,9 @@ enum LexingMode {
     Comma,
     Operator,
     ArithmeticOperator,
-    SingleQuotedString,
-    DoubleQuotedString,
-    BackticksQuotedString,
-    Open,
-    Close,
+    QuotedString(char),
+    Open(char),
+    Close(char),
 }
 
 #[derive(Clone)]
@@ -86,15 +84,21 @@ impl LexerState {
             roots_finished: false,
         }
     }
+
+    /// Common guard for clause-level keywords (from, where, group, order, by, limit, offset, into)
+    fn is_keyword_position(&self, search_root_ctx: bool) -> bool {
+        !self.after_operator && !self.after_logical && !self.after_not && !search_root_ctx
+    }
 }
 
 #[derive(Clone)]
 pub struct Lexer {
     input: Vec<String>,
     input_index: usize,
-    char_index: isize,
-    state: Box<LexerState>,
-    state_history: Vec<Box<LexerState>>,
+    char_index: usize,
+    between_parts: bool,
+    state: LexerState,
+    state_history: Vec<LexerState>,
 }
 
 impl Lexer {
@@ -103,7 +107,8 @@ impl Lexer {
             input,
             input_index: 0,
             char_index: 0,
-            state: Box::new(LexerState::new()),
+            between_parts: false,
+            state: LexerState::new(),
             state_history: vec![],
         }
     }
@@ -114,14 +119,14 @@ impl Lexer {
 
     pub fn push_state(&mut self) {
         self.state_history.push(self.state.clone());
-        self.state = Box::new(LexerState::new());
+        self.state = LexerState::new();
     }
 
     pub fn pop_state(&mut self) {
         if let Some(state) = self.state_history.pop() {
             self.state = state;
         } else {
-            self.state = Box::new(LexerState::new());
+            self.state = LexerState::new();
         }
     }
 
@@ -130,67 +135,60 @@ impl Lexer {
         let mut mode = LexingMode::Undefined;
         let mut quote_closed = false;
         let search_root_ctx = self.state.possible_search_root;
+        let mut chars_buf: Vec<char> = Vec::new();
+        let mut chars_input_index: usize = usize::MAX;
 
         loop {
-            let input_part = self.input.get(self.input_index);
-            if input_part.is_none() {
-                break;
+            if self.input_index != chars_input_index {
+                if let Some(input_part) = self.input.get(self.input_index) {
+                    chars_buf = input_part.chars().collect();
+                    chars_input_index = self.input_index;
+                } else {
+                    break;
+                }
             }
-            let input_part = input_part.unwrap();
-            
+
             let c;
-            if self.char_index == -1 {
+            if self.between_parts {
                 match mode {
-                    LexingMode::SingleQuotedString
-                    | LexingMode::DoubleQuotedString
-                    | LexingMode::BackticksQuotedString => {
+                    LexingMode::QuotedString(_) => {
+                        self.between_parts = false;
                         self.char_index = 0;
                         continue;
                     }
                     LexingMode::RawString if s.ends_with('-') && looks_like_date(&s[..s.len() - 1]) => {
+                        self.between_parts = false;
                         self.char_index = 0;
                         continue;
                     }
                     LexingMode::Operator => {
+                        self.between_parts = false;
                         self.char_index = 0;
                         continue;
                     }
                     _ => {
+                        self.between_parts = false;
                         c = ' ';
                     }
                 }
             } else {
-                let input_char = input_part.chars().nth(self.char_index as usize);
-                if input_char.is_none() {
-                    self.input_index += 1;
-                    self.char_index = -1;
-                    self.state.possible_search_root = false;
-                    continue;
+                match chars_buf.get(self.char_index) {
+                    Some(&ch) => c = ch,
+                    None => {
+                        self.input_index += 1;
+                        self.between_parts = true;
+                        self.char_index = 0;
+                        self.state.possible_search_root = false;
+                        continue;
+                    }
                 }
-                c = input_char.unwrap();
             }
             
             match mode {
-                LexingMode::Comma | LexingMode::Open | LexingMode::Close => break,
-                LexingMode::SingleQuotedString => {
+                LexingMode::Comma | LexingMode::Open(_) | LexingMode::Close(_) => break,
+                LexingMode::QuotedString(quote_char) => {
                     self.char_index += 1;
-                    if c == '\'' {
-                        quote_closed = true;
-                        break;
-                    }
-                    s.push(c);
-                }
-                LexingMode::DoubleQuotedString => {
-                    self.char_index += 1;
-                    if c == '"' {
-                        quote_closed = true;
-                        break;
-                    }
-                    s.push(c);
-                }
-                LexingMode::BackticksQuotedString => {
-                    self.char_index += 1;
-                    if c == '`' {
+                    if c == quote_char {
                         quote_closed = true;
                         break;
                     }
@@ -209,7 +207,7 @@ impl Lexer {
                 }
                 LexingMode::RawString => {
                     let is_date = c == '-' && !self.state.after_arithmetic && looks_like_date(&s) && {
-                        let next_char = input_part.chars().nth((self.char_index + 1) as usize)
+                        let next_char = chars_buf.get(self.char_index + 1).copied()
                             .or_else(|| self.input.get(self.input_index + 1)
                                 .and_then(|p| p.chars().next()));
                         matches!(next_char, Some('0'..='9'))
@@ -235,18 +233,10 @@ impl Lexer {
                     self.char_index += 1;
                     match c {
                         ' ' => {}
-                        '\'' => mode = LexingMode::SingleQuotedString,
-                        '"' => mode = LexingMode::DoubleQuotedString,
-                        '`' => mode = LexingMode::BackticksQuotedString,
+                        '\'' | '"' | '`' => mode = LexingMode::QuotedString(c),
                         ',' => mode = LexingMode::Comma,
-                        '(' | '{' => {
-                            s.push(c);
-                            mode = LexingMode::Open
-                        }
-                        ')' | '}' => {
-                            s.push(c);
-                            mode = LexingMode::Close
-                        }
+                        '(' | '{' => mode = LexingMode::Open(c),
+                        ')' | '}' => mode = LexingMode::Close(c),
                         _ => {
                             mode = if self.is_op_char(c) {
                                 LexingMode::Operator
@@ -260,49 +250,34 @@ impl Lexer {
                     }
 
                     if c != ' ' {
-                        self.state.after_open = mode == LexingMode::Open;
+                        self.state.after_open = matches!(mode, LexingMode::Open(_));
                     }
                 }
             }
         }
 
         let lexeme = match mode {
-            LexingMode::SingleQuotedString if quote_closed => Some(Lexeme::String(s)),
-            LexingMode::DoubleQuotedString if quote_closed => Some(Lexeme::String(s)),
-            LexingMode::BackticksQuotedString if quote_closed => Some(Lexeme::String(s)),
-            LexingMode::SingleQuotedString | LexingMode::DoubleQuotedString | LexingMode::BackticksQuotedString
-                => Some(Lexeme::Error(format!("Unterminated quoted string: {}", s))),
+            LexingMode::QuotedString(_) if quote_closed => Some(Lexeme::String(s)),
+            LexingMode::QuotedString(_) => Some(Lexeme::Error(format!("Unterminated quoted string: {}", s))),
             LexingMode::Operator => Some(Lexeme::Operator(s)),
             LexingMode::ArithmeticOperator => Some(Lexeme::ArithmeticOperator(s)),
             LexingMode::Comma => Some(Lexeme::Comma),
-            LexingMode::Open if &s == "(" => {
-                s.clear();
-                Some(Lexeme::Open)
-            }
-            LexingMode::Open if &s == "{" => {
-                s.clear();
-                Some(Lexeme::CurlyOpen)
-            }
-            LexingMode::Close if &s == ")" => {
-                s.clear();
-                Some(Lexeme::Close)
-            }
-            LexingMode::Close if &s == "}" => {
-                s.clear();
-                Some(Lexeme::CurlyClose)
-            }
+            LexingMode::Open('(') => Some(Lexeme::Open),
+            LexingMode::Open(_) => Some(Lexeme::CurlyOpen),
+            LexingMode::Close(')') => Some(Lexeme::Close),
+            LexingMode::Close(_) => Some(Lexeme::CurlyClose),
             LexingMode::RawString => match s.to_lowercase().as_str() {
                 "select" if !self.state.after_operator && !self.state.after_value_start && !search_root_ctx => {
                     Some(Lexeme::Select)
                 }
-                "from" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "from" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.before_from = false;
                     self.state.after_where = false;
                     self.state.in_group_by = false;
                     self.state.in_order_by = false;
                     Some(Lexeme::From)
                 }
-                "where" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "where" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.before_from = false;
                     self.state.after_where = true;
                     self.state.in_group_by = false;
@@ -312,34 +287,34 @@ impl Lexer {
                 "or" if self.state.after_where && !self.state.after_operator && !self.state.after_logical && !self.state.after_not => Some(Lexeme::Or),
                 "and" if self.state.after_where && !self.state.after_operator && !self.state.after_logical && !self.state.after_not => Some(Lexeme::And),
                 "not" if self.state.after_where && !self.state.after_operator && !self.state.after_value_start => Some(Lexeme::Not),
-                "group" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "group" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.after_where = false;
                     self.state.in_group_by = true;
                     self.state.in_order_by = false;
                     Some(Lexeme::Group)
                 }
-                "order" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "order" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.after_where = false;
                     self.state.in_group_by = false;
                     self.state.in_order_by = true;
                     Some(Lexeme::Order)
                 }
-                "by" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => Some(Lexeme::By),
-                "asc" if !self.state.after_operator && !self.state.before_from && !self.state.after_where && !self.state.after_logical && !self.state.after_not && !search_root_ctx && self.state.in_order_by => self.next_lexeme(),
-                "desc" if !self.state.after_operator && !self.state.before_from && !self.state.after_where && !self.state.after_logical && !self.state.after_not && !search_root_ctx && self.state.in_order_by => Some(Lexeme::DescendingOrder),
-                "limit" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "by" if self.state.is_keyword_position(search_root_ctx) => Some(Lexeme::By),
+                "asc" if self.state.is_keyword_position(search_root_ctx) && !self.state.before_from && !self.state.after_where && self.state.in_order_by => self.next_lexeme(),
+                "desc" if self.state.is_keyword_position(search_root_ctx) && !self.state.before_from && !self.state.after_where && self.state.in_order_by => Some(Lexeme::DescendingOrder),
+                "limit" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.after_where = false;
                     self.state.in_group_by = false;
                     self.state.in_order_by = false;
                     Some(Lexeme::Limit)
                 }
-                "offset" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "offset" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.after_where = false;
                     self.state.in_group_by = false;
                     self.state.in_order_by = false;
                     Some(Lexeme::Offset)
                 }
-                "into" if !self.state.after_operator && !self.state.after_logical && !self.state.after_not && !search_root_ctx => {
+                "into" if self.state.is_keyword_position(search_root_ctx) => {
                     self.state.after_where = false;
                     self.state.in_group_by = false;
                     self.state.in_order_by = false;
@@ -349,7 +324,7 @@ impl Lexer {
                 "eq" | "ne" | "gt" | "lt" | "ge" | "le" | "gte" | "lte" | "eeq" | "ene"
                 | "regexp" | "rx" | "like" | "notlike" | "notrx"
                 | "between" | "notbetween" | "in" | "notin" if self.state.after_where && !self.state.after_operator && !self.state.after_logical => Some(Lexeme::Operator(s.to_lowercase())),
-                "mul" | "div" | "mod" | "plus" | "minus" if (self.state.before_from || self.state.after_where || self.state.in_group_by || self.state.in_order_by) && !self.state.after_operator && !self.state.after_logical && !self.state.after_not => Some(Lexeme::ArithmeticOperator(s)),
+                "mul" | "div" | "mod" | "plus" | "minus" if (self.state.before_from || self.state.after_where || self.state.in_group_by || self.state.in_order_by) && self.state.is_keyword_position(false) => Some(Lexeme::ArithmeticOperator(s)),
                 _ => Some(Lexeme::RawString(s)),
             },
             _ => None,
