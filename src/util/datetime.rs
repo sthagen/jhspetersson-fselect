@@ -1,6 +1,6 @@
 use std::sync::{LazyLock, Mutex};
 
-use chrono::{Datelike, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
 use chrono_english::{parse_date_string, Dialect};
 use regex::Regex;
 
@@ -148,9 +148,10 @@ pub fn parse_datetime(s: &str) -> Result<(NaiveDateTime, NaiveDateTime), String>
 
 pub fn to_local_datetime(dt: &zip::DateTime) -> NaiveDateTime {
     let date = NaiveDate::from_ymd_opt(dt.year() as i32, dt.month() as u32, dt.day() as u32)
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(dt.year() as i32, 1, 1).unwrap());
+        .or_else(|| NaiveDate::from_ymd_opt(dt.year() as i32, 1, 1))
+        .unwrap_or(NaiveDate::default());
     let time = NaiveTime::from_hms_opt(dt.hour() as u32, dt.minute() as u32, dt.second() as u32)
-        .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        .unwrap_or(NaiveTime::default());
     NaiveDateTime::new(date, time)
 }
 
@@ -169,7 +170,7 @@ pub fn format_time(time: &NaiveTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Local, NaiveDate};
+    use chrono::{Datelike, Local, NaiveDate};
 
     #[test]
     fn test_parse_today() {

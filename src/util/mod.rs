@@ -29,7 +29,6 @@ use std::fs::symlink_metadata;
 use std::fs::DirEntry;
 use std::fs::File;
 use std::fs::Metadata;
-use std::io;
 use std::io::Read;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -40,7 +39,6 @@ use std::sync::LazyLock;
 use chrono::{Datelike, Local, Timelike};
 use mp3_metadata::MP3Metadata;
 use regex::Regex;
-use sha1::Digest;
 
 pub use self::datetime::format_date;
 pub use self::datetime::format_datetime;
@@ -571,30 +569,26 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
                 }
             }
 
-            if exif_info.contains_key("GPSLongitude") && exif_info.contains_key("GPSLongitudeRef") {
-                let location = exif_info.get("GPSLongitude").unwrap().to_string();
-                let location_ref = exif_info.get("GPSLongitudeRef").unwrap().to_string();
+            if let (Some(location), Some(location_ref)) =
+                (exif_info.get("GPSLongitude").cloned(), exif_info.get("GPSLongitudeRef").cloned())
+            {
                 if let Ok(coord) = parse_location_string(location, location_ref, "W") {
                     exif_info.insert(String::from("__Lng"), coord.to_string());
                 }
             }
 
-            if exif_info.contains_key("GPSLatitude") && exif_info.contains_key("GPSLatitudeRef") {
-                let location = exif_info.get("GPSLatitude").unwrap().to_string();
-                let location_ref = exif_info.get("GPSLatitudeRef").unwrap().to_string();
+            if let (Some(location), Some(location_ref)) =
+                (exif_info.get("GPSLatitude").cloned(), exif_info.get("GPSLatitudeRef").cloned())
+            {
                 if let Ok(coord) = parse_location_string(location, location_ref, "S") {
                     exif_info.insert(String::from("__Lat"), coord.to_string());
                 }
             }
 
-            if exif_info.contains_key("GPSAltitude") && exif_info.contains_key("GPSAltitudeRef") {
-                let mut altitude = exif_info
-                    .get("GPSAltitude")
-                    .unwrap()
-                    .to_string()
-                    .parse::<f32>()
-                    .unwrap_or(0.0);
-                let altitude_ref = exif_info.get("GPSAltitudeRef").unwrap().to_string();
+            if let (Some(altitude_str), Some(altitude_ref)) =
+                (exif_info.get("GPSAltitude").cloned(), exif_info.get("GPSAltitudeRef").cloned())
+            {
+                let mut altitude = altitude_str.parse::<f32>().unwrap_or(0.0);
                 if altitude_ref.eq("1") {
                     altitude = -altitude;
                 }
@@ -693,52 +687,43 @@ pub fn get_line_count(entry: &DirEntry) -> Option<usize> {
     None
 }
 
-pub fn get_sha1_file_hash(entry: &DirEntry) -> String {
+fn hash_file<D: sha1::Digest>(entry: &DirEntry) -> String {
     if let Ok(mut file) = File::open(entry.path()) {
-        let mut hasher = sha1::Sha1::new();
-        if io::copy(&mut file, &mut hasher).is_ok() {
-            let hash = hasher.finalize();
-            return format!("{:x}", hash);
+        let mut hasher = D::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(_) => return String::new(),
+            }
         }
+        let hash = hasher.finalize();
+        let mut hex = String::with_capacity(hash.len() * 2);
+        for byte in hash.iter() {
+            use std::fmt::Write;
+            let _ = write!(hex, "{:02x}", byte);
+        }
+        return hex;
     }
 
     String::new()
+}
+
+pub fn get_sha1_file_hash(entry: &DirEntry) -> String {
+    hash_file::<sha1::Sha1>(entry)
 }
 
 pub fn get_sha256_file_hash(entry: &DirEntry) -> String {
-    if let Ok(mut file) = File::open(entry.path()) {
-        let mut hasher = sha2::Sha256::new();
-        if io::copy(&mut file, &mut hasher).is_ok() {
-            let hash = hasher.finalize();
-            return format!("{:x}", hash);
-        }
-    }
-
-    String::new()
+    hash_file::<sha2::Sha256>(entry)
 }
 
 pub fn get_sha512_file_hash(entry: &DirEntry) -> String {
-    if let Ok(mut file) = File::open(entry.path()) {
-        let mut hasher = sha2::Sha512::new();
-        if io::copy(&mut file, &mut hasher).is_ok() {
-            let hash = hasher.finalize();
-            return format!("{:x}", hash);
-        }
-    }
-
-    String::new()
+    hash_file::<sha2::Sha512>(entry)
 }
 
 pub fn get_sha3_512_file_hash(entry: &DirEntry) -> String {
-    if let Ok(mut file) = File::open(entry.path()) {
-        let mut hasher = sha3::Sha3_512::new();
-        if io::copy(&mut file, &mut hasher).is_ok() {
-            let hash = hasher.finalize();
-            return format!("{:x}", hash);
-        }
-    }
-
-    String::new()
+    hash_file::<sha3::Sha3_512>(entry)
 }
 
 pub fn is_dir_empty(entry: &DirEntry) -> Option<bool> {

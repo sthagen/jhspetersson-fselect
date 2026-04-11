@@ -653,11 +653,12 @@ impl <'a> Parser<'a> {
             }
             Some(Lexeme::Operator(s)) if s.as_str() == "in" || s.as_str() == "exists" || s.as_str() == "notin" || s.as_str() == "notexists" => {
                 let list = self.parse_list()?;
-                let op = Op::from_with_not(s, not);
+                let op = Op::from_with_not(s.clone(), not)
+                    .ok_or_else(|| format!("Unknown operator: {}", s))?;
                 let left = left.ok_or_else(|| "Expected expression before operator".to_string())?;
                 Ok(Some(Expr::op(
                     left,
-                    op.unwrap(),
+                    op,
                     list,
                 )))
             }
@@ -1123,10 +1124,10 @@ impl <'a> Parser<'a> {
                 let lexeme = self.next_lexeme();
                 return match lexeme {
                     Some(Lexeme::RawString(s)) | Some(Lexeme::String(s)) => {
-                        // Parse the first number (could be offset or limit)
+                        // Parse the first number (could be limit alone or offset in offset,limit format)
                         if let Ok(first_number) = s.parse::<u32>() {
                             if let Some(Lexeme::Comma) = self.next_lexeme() {
-                                // This is offset,limit format
+                                // This is offset,limit format (first_number=offset, second_number=limit)
                                 let second_lexeme = self.next_lexeme();
                                 match second_lexeme {
                                     Some(Lexeme::RawString(s2)) | Some(Lexeme::String(s2)) => {
@@ -1252,14 +1253,6 @@ impl <'a> Parser<'a> {
                 }
             }
         }
-    }
-
-    fn next_lexeme_or_err(&mut self) -> Result<Option<Lexeme>, String> {
-        let lexeme = self.next_lexeme();
-        if let Some(Lexeme::Error(ref msg)) = lexeme {
-            return Err(msg.clone());
-        }
-        Ok(lexeme)
     }
 
     fn push_lexeme(&mut self, lexeme: Lexeme) {
