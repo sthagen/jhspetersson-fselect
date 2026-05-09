@@ -1,6 +1,7 @@
 use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike};
+use chrono::{DateTime, Duration, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_english::{parse_date_string, Dialect};
 use regex::Regex;
 
@@ -146,6 +147,24 @@ pub fn parse_datetime(s: &str) -> Result<(NaiveDateTime, NaiveDateTime), String>
     }
 }
 
+pub fn system_time_to_naive_local(sdt: SystemTime) -> Option<NaiveDateTime> {
+    let (sec, nsec) = match sdt.duration_since(UNIX_EPOCH) {
+        Ok(dur) => (i64::try_from(dur.as_secs()).ok()?, dur.subsec_nanos()),
+        Err(e) => {
+            let dur = e.duration();
+            let secs = i64::try_from(dur.as_secs()).ok()?;
+            if dur.subsec_nanos() == 0 {
+                (secs.checked_neg()?, 0)
+            } else {
+                (secs.checked_neg()?.checked_sub(1)?, 1_000_000_000 - dur.subsec_nanos())
+            }
+        }
+    };
+
+    DateTime::<Utc>::from_timestamp(sec, nsec)
+        .map(|dt_utc| dt_utc.with_timezone(&Local).naive_local())
+}
+
 pub fn to_local_datetime(dt: &zip::DateTime) -> NaiveDateTime {
     let date = NaiveDate::from_ymd_opt(dt.year() as i32, dt.month() as u32, dt.day() as u32)
         .or_else(|| NaiveDate::from_ymd_opt(dt.year() as i32, 1, 1))
@@ -170,6 +189,7 @@ pub fn format_time(time: &NaiveTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration as StdDuration;
     use chrono::{Datelike, Local, NaiveDate};
 
     #[test]
@@ -299,5 +319,83 @@ mod tests {
         // EXIF-style colon-separated dates should work
         let result = parse_datetime("2024:01:15");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_unix_epoch() {
+        let result = system_time_to_naive_local(UNIX_EPOCH);
+        assert!(result.is_some(), "UNIX_EPOCH must convert successfully");
+
+        let expected = DateTime::<Utc>::from_timestamp(0, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .naive_local();
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_now_roundtrip() {
+        let now = SystemTime::now();
+        let result = system_time_to_naive_local(now);
+        assert!(result.is_some(), "SystemTime::now() must convert");
+
+        let now_local = Local::now().naive_local();
+        let diff = (now_local - result.unwrap()).num_seconds().abs();
+        assert!(diff < 5, "round-trip drift should be tiny, got {}s", diff);
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_before_epoch() {
+        let one_sec_before = UNIX_EPOCH - StdDuration::from_secs(1);
+        let result = system_time_to_naive_local(one_sec_before);
+        assert!(result.is_some(), "pre-epoch SystemTime must convert");
+
+        let expected = DateTime::<Utc>::from_timestamp(-1, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .naive_local();
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_before_epoch_with_nanos() {
+        let pre_epoch = UNIX_EPOCH - StdDuration::new(1, 0) + StdDuration::from_millis(500);
+        let result = system_time_to_naive_local(pre_epoch);
+        assert!(result.is_some(), "pre-epoch SystemTime with nanos must convert");
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_far_future_does_not_panic() {
+        let huge = StdDuration::from_secs(u64::MAX / 2);
+        if let Some(t) = SystemTime::now().checked_add(huge) {
+            let _ = system_time_to_naive_local(t);
+        }
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_max_does_not_panic() {
+        let mut times = vec![];
+        if let Some(t) = SystemTime::now().checked_add(StdDuration::from_secs(i64::MAX as u64 - 1)) {
+            times.push(t);
+        }
+        if let Some(t) = UNIX_EPOCH.checked_add(StdDuration::from_secs(100_000_000_000_000)) {
+            times.push(t);
+        }
+        for t in times {
+            let _ = system_time_to_naive_local(t);
+        }
+    }
+
+    #[test]
+    fn test_system_time_to_naive_local_wrapped_seconds_returns_none() {
+        let beyond_i64 = StdDuration::from_secs(u64::MAX - 10);
+        if let Some(t) = UNIX_EPOCH.checked_add(beyond_i64) {
+            let result = system_time_to_naive_local(t);
+            assert!(
+                result.is_none(),
+                "values past i64::MAX seconds must yield None, got {:?}",
+                result
+            );
+        }
     }
 }
