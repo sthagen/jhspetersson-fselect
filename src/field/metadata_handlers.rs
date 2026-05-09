@@ -4,7 +4,6 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-use chrono::{DateTime, Local};
 #[cfg(unix)]
 use xattr::FileExt;
 
@@ -209,8 +208,9 @@ pub fn handle_created(ctx: &mut FieldContext) -> Result<Variant, SearchError> {
     ctx.fms.update_file_metadata(ctx.entry, ctx.follow_symlinks);
     if let Some(attrs) = ctx.fms.get_file_metadata() {
         if let Ok(sdt) = attrs.created() {
-            let dt: DateTime<Local> = DateTime::from(sdt);
-            return Ok(Variant::from_datetime(dt.naive_local()));
+            if let Some(naive) = system_time_to_naive_local(sdt) {
+                return Ok(Variant::from_datetime(naive));
+            }
         }
     }
     Ok(Variant::empty(VariantType::String))
@@ -220,8 +220,9 @@ pub fn handle_accessed(ctx: &mut FieldContext) -> Result<Variant, SearchError> {
     ctx.fms.update_file_metadata(ctx.entry, ctx.follow_symlinks);
     if let Some(attrs) = ctx.fms.get_file_metadata() {
         if let Ok(sdt) = attrs.accessed() {
-            let dt: DateTime<Local> = DateTime::from(sdt);
-            return Ok(Variant::from_datetime(dt.naive_local()));
+            if let Some(naive) = system_time_to_naive_local(sdt) {
+                return Ok(Variant::from_datetime(naive));
+            }
         }
     }
     Ok(Variant::empty(VariantType::String))
@@ -240,8 +241,9 @@ pub fn handle_modified(ctx: &mut FieldContext) -> Result<Variant, SearchError> {
             ctx.fms.update_file_metadata(ctx.entry, ctx.follow_symlinks);
             if let Some(attrs) = ctx.fms.get_file_metadata() {
                 if let Ok(sdt) = attrs.modified() {
-                    let dt: DateTime<Local> = DateTime::from(sdt);
-                    return Ok(Variant::from_datetime(dt.naive_local()));
+                    if let Some(naive) = system_time_to_naive_local(sdt) {
+                        return Ok(Variant::from_datetime(naive));
+                    }
                 }
             }
             Ok(Variant::empty(VariantType::String))
