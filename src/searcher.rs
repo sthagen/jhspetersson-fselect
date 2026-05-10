@@ -91,6 +91,59 @@ macro_rules! try_output {
     };
 }
 
+/// Returns true if a subquery's results are independent of the outer row,
+/// i.e. it can be safely memoised. A subquery is *not* cacheable when any of
+/// its expressions references a `root_alias` that is not declared on one of
+/// the subquery's own roots — that's the correlated-subquery case, where the
+/// result depends on outer-row state propagated via `record_context`.
+fn is_subquery_cacheable(query: &Query) -> bool {
+    let own_aliases: HashSet<String> = query
+        .roots
+        .iter()
+        .filter_map(|r| r.options.alias.clone())
+        .collect();
+    !expr_references_external_alias(&query.expr, &own_aliases)
+        && query.fields.iter().all(|e| !expr_walk_external_alias(e, &own_aliases))
+}
+
+fn expr_references_external_alias(expr: &Option<Expr>, own: &HashSet<String>) -> bool {
+    match expr {
+        Some(e) => expr_walk_external_alias(e, own),
+        None => false,
+    }
+}
+
+fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
+    if let Some(ref alias) = expr.root_alias {
+        if !own.contains(alias) {
+            return true;
+        }
+    }
+    if let Some(ref left) = expr.left {
+        if expr_walk_external_alias(left, own) { return true; }
+    }
+    if let Some(ref right) = expr.right {
+        if expr_walk_external_alias(right, own) { return true; }
+    }
+    if let Some(ref args) = expr.args {
+        if args.iter().any(|a| expr_walk_external_alias(a, own)) { return true; }
+    }
+    // Nested subqueries: descend so a doubly-nested correlated reference is
+    // also detected.
+    if let Some(ref sub) = expr.subquery {
+        let nested_own: HashSet<String> = sub
+            .roots
+            .iter()
+            .filter_map(|r| r.options.alias.clone())
+            .chain(own.iter().cloned())
+            .collect();
+        if let Some(ref sub_expr) = sub.expr {
+            if expr_walk_external_alias(sub_expr, &nested_own) { return true; }
+        }
+    }
+    false
+}
+
 impl<'a> Searcher<'a> {
     pub fn new(
         query: &'a Query,
@@ -464,8 +517,8 @@ impl<'a> Searcher<'a> {
 
     fn get_list_from_subquery(&mut self, query: Query) -> Vec<String> {
         let query_str = format!("{:?}", query);
-        
-        let ok_to_cache = query.roots.iter().all(|root| root.options.alias.is_none());
+
+        let ok_to_cache = is_subquery_cacheable(&query);
         if ok_to_cache {
             if let Some(cached) = self.subquery_cache.get(&query_str) {
                 return cached.clone();
@@ -1948,4 +2001,64 @@ mod tests {
         assert_ne!(as_float as i64, large, "f64 loses precision for 2^53+1");
     }
 
+    #[test]
+    fn correlated_subquery_without_inner_alias_is_not_cacheable() {
+        // The subquery has no alias on its own root but references `t1.size`
+        // from the outer query, so its result depends on the outer row.
+        // The previous heuristic only checked the subquery's own roots and
+        // would wrongly memoise this — returning the first row's result for
+        // every subsequent outer row.
+        let mut t1_size = Expr::field(Field::Size);
+        t1_size.root_alias = Some(String::from("t1"));
+
+        let inner_where = Expr::op(
+            Expr::field(Field::Size),
+            crate::operators::Op::Gt,
+            t1_size,
+        );
+
+        let subquery = Query {
+            fields: vec![Expr::field(Field::Name)],
+            roots: vec![Root::new(
+                String::from("/t2"),
+                RootOptions::new(),
+            )],
+            expr: Some(inner_where),
+            grouping_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        };
+
+        assert!(
+            !is_subquery_cacheable(&subquery),
+            "subquery referencing outer alias t1 must not be cached"
+        );
+    }
+
+    #[test]
+    fn uncorrelated_subquery_remains_cacheable() {
+        // No root_alias references in the inner expression — safe to cache.
+        let inner_where = Expr::op(
+            Expr::field(Field::Size),
+            crate::operators::Op::Gt,
+            Expr::value(String::from("0")),
+        );
+        let subquery = Query {
+            fields: vec![Expr::field(Field::Name)],
+            roots: vec![Root::new(String::from("/t2"), RootOptions::new())],
+            expr: Some(inner_where),
+            grouping_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        };
+        assert!(is_subquery_cacheable(&subquery));
+    }
 }
