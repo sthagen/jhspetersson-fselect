@@ -155,6 +155,46 @@ macro_rules! functions {
     }
 }
 
+/// Streams the file in fixed-size chunks searching for `needle`, with a
+/// rolling overlap of `needle.len() - 1` bytes so matches that straddle chunk
+/// boundaries are still found. Avoids the unbounded memory cost (and the
+/// UTF-8 requirement) of `read_to_string`.
+fn file_contains<R: Read>(mut reader: R, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    const CHUNK: usize = 8 * 1024;
+    let overlap = needle.len() - 1;
+    let mut buf = vec![0u8; CHUNK + overlap];
+    let mut carry = 0usize;
+
+    loop {
+        let read = match reader.read(&mut buf[carry..]) {
+            Ok(0) => return false,
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let end = carry + read;
+        if memmem(&buf[..end], needle) {
+            return true;
+        }
+        if end >= overlap {
+            buf.copy_within(end - overlap..end, 0);
+            carry = overlap;
+        } else {
+            carry = end;
+        }
+    }
+}
+
+fn memmem(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Applies a function to a value and returns the result.
 /// If no function is provided, the original value is returned.
 ///
@@ -652,15 +692,8 @@ pub fn get_value(
             }
 
             if let Some(entry) = entry {
-                if let Ok(mut f) = File::open(entry.path()) {
-                    let mut contents = String::new();
-                    if f.read_to_string(&mut contents).is_ok() {
-                        if contents.contains(&function_arg) {
-                            return Ok(Variant::from_bool(true));
-                        } else {
-                            return Ok(Variant::from_bool(false));
-                        }
-                    }
+                if let Ok(file) = File::open(entry.path()) {
+                    return Ok(Variant::from_bool(file_contains(file, function_arg.as_bytes())));
                 }
             }
 
@@ -3238,5 +3271,77 @@ mod tests {
             &None,
         );
         assert!(result.is_err());
+    }
+
+    fn write_temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("fselect_contains_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        path
+    }
+
+    fn dir_entry_for(path: &std::path::Path) -> std::fs::DirEntry {
+        let parent = path.parent().unwrap();
+        let target = path.file_name().unwrap();
+        std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == target)
+            .unwrap()
+    }
+
+    #[test]
+    fn contains_finds_substring_in_non_utf8_file() {
+        // A file whose body is mostly invalid UTF-8 but contains the literal
+        // ASCII substring "needle". The streaming implementation must find it;
+        // a String-based read_to_string fails outright on invalid UTF-8 and
+        // wrongly reports the substring as absent.
+        let mut bytes: Vec<u8> = vec![0xff, 0xfe, 0xfd, 0xfc, 0x80, 0x81];
+        bytes.extend_from_slice(b"needle");
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        let path = write_temp_file("non_utf8.bin", &bytes);
+        let entry = dir_entry_for(&path);
+
+        let result = get_value(
+            &Function::Contains,
+            String::from("needle"),
+            vec![],
+            Some(&entry),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(result.to_bool(), true, "Contains should find substring even in non-UTF8 files");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn contains_finds_substring_crossing_chunk_boundary() {
+        // Force the substring to straddle a chunk boundary. The streaming
+        // implementation uses an 8KiB chunk size internally; place the needle
+        // so that part of it lies in the first chunk and the rest in the next.
+        let chunk_size: usize = 8 * 1024;
+        let needle = b"FOOBAR_BOUNDARY";
+        let prefix = chunk_size - 5;
+        let mut bytes = vec![b'a'; prefix];
+        bytes.extend_from_slice(needle);
+        bytes.extend(std::iter::repeat(b'b').take(100));
+        let path = write_temp_file("boundary.bin", &bytes);
+        let entry = dir_entry_for(&path);
+
+        let result = get_value(
+            &Function::Contains,
+            String::from("FOOBAR_BOUNDARY"),
+            vec![],
+            Some(&entry),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(result.to_bool(), true, "Contains must find substrings that span chunks");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
