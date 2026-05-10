@@ -93,7 +93,10 @@ fn parse_dockerignore(
         reader
             .lines()
             .filter(|line| match line {
-                Ok(line) => !line.trim().is_empty() && !line.starts_with("#"),
+                Ok(line) => {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with('#')
+                }
                 _ => false,
             })
             .for_each(|line| {
@@ -263,5 +266,29 @@ mod tests {
     fn test_all_slashes_pattern_rejected() {
         let result = convert_dockerignore_glob("///", Path::new("/tmp"));
         assert!(result.is_err(), "pattern of only slashes should be rejected");
+    }
+
+    #[test]
+    fn indented_comment_is_ignored() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("fselect_docker_indented_comment_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join(".dockerignore");
+        {
+            let mut f = std::fs::File::create(&file_path).unwrap();
+            writeln!(f, "   # this is an indented comment").unwrap();
+            writeln!(f, "real_pattern").unwrap();
+        }
+
+        let filters = parse_dockerignore(&file_path, &dir).unwrap();
+        assert_eq!(
+            filters.len(),
+            1,
+            "indented comment should not be parsed as a pattern, got {} filters",
+            filters.len()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

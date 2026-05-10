@@ -101,7 +101,10 @@ fn parse_hgignore(file_path: &Path, dir_path: &Path) -> Result<Vec<HgignoreFilte
         reader
             .lines()
             .filter(|line| match line {
-                Ok(line) => !line.trim().is_empty() && !line.starts_with("#"),
+                Ok(line) => {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with('#')
+                }
                 _ => false,
             })
             .for_each(|line| {
