@@ -285,7 +285,9 @@ Include arbitrary text as columns:
 
 Group results:
 
-    fselect "ext, count(*) from /tmp group by ext"            
+    fselect "ext, count(*) from /tmp group by ext"
+    fselect "ext, count(*) from /tmp group by 1"
+    fselect "mime, ext, count(*) from /tmp group by 1, 2"
 
 Order results:
 
