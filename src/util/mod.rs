@@ -727,7 +727,7 @@ pub fn get_sha3_512_file_hash(entry: &DirEntry) -> String {
 
 pub fn is_dir_empty(entry: &DirEntry) -> Option<bool> {
     match fs::read_dir(entry.path()) {
-        Ok(dir) => Some(!dir.into_iter().any(|_| true)),
+        Ok(mut dir) => Some(dir.next().is_none()),
         _ => None,
     }
 }
@@ -931,6 +931,34 @@ mod tests {
         assert_eq!(capitalize_initials("test"), String::from("Test"));
         assert_eq!(capitalize_initials("some test"), String::from("Some Test"));
         assert_eq!(capitalize_initials("превед медвед"), String::from("Превед Медвед"));
+    }
+
+    fn dir_entry_for(path: &Path) -> DirEntry {
+        let parent = path.parent().unwrap();
+        let target = path.file_name().unwrap();
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == target)
+            .unwrap()
+    }
+
+    #[test]
+    fn is_dir_empty_distinguishes_empty_and_non_empty() {
+        let base = std::env::temp_dir().join("fselect_is_dir_empty_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let empty = base.join("empty_dir");
+        fs::create_dir_all(&empty).unwrap();
+        let non_empty = base.join("non_empty_dir");
+        fs::create_dir_all(&non_empty).unwrap();
+        fs::write(non_empty.join("marker.txt"), b"x").unwrap();
+
+        assert_eq!(is_dir_empty(&dir_entry_for(&empty)), Some(true));
+        assert_eq!(is_dir_empty(&dir_entry_for(&non_empty)), Some(false));
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
