@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-use chrono::{Datelike, Local, Timelike};
+use chrono::{NaiveDate, NaiveDateTime};
 use mp3_metadata::MP3Metadata;
 use regex::Regex;
 
@@ -133,20 +133,13 @@ where
     where
         T: Ord,
     {
-        let default = Local::now()
-            .naive_local()
-            .with_year(1970)
-            .unwrap()
-            .with_month(1)
-            .unwrap()
-            .with_day(1)
-            .unwrap()
-            .with_hour(0)
-            .unwrap()
-            .with_minute(0)
-            .unwrap()
-            .with_second(0)
-            .unwrap();
+        static EPOCH: LazyLock<NaiveDateTime> = LazyLock::new(|| {
+            NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        });
+        let default = *EPOCH;
         let a = parse_datetime(&self.values[i].to_string())
             .unwrap_or((default, default))
             .0;
@@ -938,5 +931,26 @@ mod tests {
         assert_eq!(capitalize_initials("test"), String::from("Test"));
         assert_eq!(capitalize_initials("some test"), String::from("Some Test"));
         assert_eq!(capitalize_initials("превед медвед"), String::from("Превед Медвед"));
+    }
+
+    #[test]
+    fn datetime_fallback_is_epoch_with_zero_nanos() {
+        // The unparseable-value fallback in cmp_at_datetimes should be exactly
+        // 1970-01-01 00:00:00, not 1970-01-01 00:00:00.<current nanos>.
+        // We verify this indirectly: an unparseable value should compare Equal
+        // to a parseable "1970-01-01 00:00:00".
+        let fields = Rc::new(vec![Expr::field(Field::Modified)]);
+        let orderings = Rc::new(vec![true]);
+        let parseable = Criteria::new(
+            fields.clone(),
+            vec![String::from("1970-01-01 00:00:00")],
+            orderings.clone(),
+        );
+        let unparseable = Criteria::new(
+            fields,
+            vec![String::from("not_a_date")],
+            orderings,
+        );
+        assert_eq!(parseable.cmp(&unparseable), Ordering::Equal);
     }
 }
