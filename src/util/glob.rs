@@ -1,16 +1,23 @@
 use std::ops::Index;
+use std::sync::LazyLock;
 
 use regex::Captures;
 use regex::Regex;
+
+static GLOB_SPECIAL_CHARS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("(\\?|\\.|\\*|\\[|\\]|\\(|\\)|\\^|\\$|\\+|\\{|\\}|\\||\\\\)").unwrap()
+});
+
+static LIKE_SPECIAL_CHARS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new("(%|_|\\?|\\.|\\*|\\[|\\]|\\(|\\)|\\^|\\$|\\+|\\{|\\}|\\||\\\\)").unwrap()
+});
 
 pub fn is_glob(s: &str) -> bool {
     s.contains("*") || s.contains('?')
 }
 
 pub fn convert_glob_to_pattern(s: &str) -> Result<String, String> {
-    let string = s.to_string();
-    let regex = Regex::new("(\\?|\\.|\\*|\\[|\\]|\\(|\\)|\\^|\\$|\\+|\\{|\\}|\\||\\\\)").unwrap();
-    let string = regex.replace_all(&string, |c: &Captures| {
+    let string = GLOB_SPECIAL_CHARS.replace_all(s, |c: &Captures| {
         match c.index(0) {
             "." => "\\.",
             "*" => ".*",
@@ -39,9 +46,7 @@ pub fn convert_glob_to_pattern(s: &str) -> Result<String, String> {
 }
 
 pub fn convert_like_to_pattern(s: &str) -> Result<String, String> {
-    let string = s.to_string();
-    let regex = Regex::new("(%|_|\\?|\\.|\\*|\\[|\\]|\\(|\\)|\\^|\\$|\\+|\\{|\\}|\\||\\\\)").unwrap();
-    let string = regex.replace_all(&string, |c: &Captures| {
+    let string = LIKE_SPECIAL_CHARS.replace_all(s, |c: &Captures| {
         match c.index(0) {
             "%" => ".*",
             "_" => ".",
