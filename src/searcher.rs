@@ -218,6 +218,15 @@ impl<'a> Searcher<'a> {
 
     /// Searches directories based on configured query and outputs results to stdout.
     pub fn list_search_results(&mut self) -> Result<(), SearchError> {
+        // Pre-flight: catch unparseable date/datetime literals once, up front,
+        // so a typo like `where modified = 'not-a-date'` fails immediately
+        // with a single fatal error instead of degrading per file scanned.
+        if let Some(ref where_expr) = self.query.expr {
+            if let Err(msg) = where_expr.validate_datetime_literals() {
+                return Err(SearchError::fatal(msg).with_source("where"));
+            }
+        }
+
         let current_dir = std::env::current_dir()?;
 
         if !self.silent_mode {
@@ -1202,9 +1211,14 @@ impl<'a> Searcher<'a> {
                 VariantType::Float => arg_val.to_float() == field_value.to_float(),
                 VariantType::Bool => arg_val.to_bool() == field_value.to_bool(),
                 VariantType::DateTime => {
-                    let field_dt = field_value.to_datetime()?.0;
-                    let (arg_start, arg_finish) = arg_val.to_datetime()?;
-                    field_dt >= arg_start && field_dt <= arg_finish
+                    // Unparseable values: silently skip this arg (treat as a
+                    // non-match) instead of erroring per file scanned.
+                    match (field_value.to_datetime(), arg_val.to_datetime()) {
+                        (Ok((field_dt, _)), Ok((arg_start, arg_finish))) => {
+                            field_dt >= arg_start && field_dt <= arg_finish
+                        }
+                        _ => false,
+                    }
                 }
             };
             if matches {
@@ -1418,22 +1432,35 @@ impl<'a> Searcher<'a> {
                     }
                 }
                 VariantType::DateTime => {
-                    let (start, finish) = value.to_datetime()?;
-                    let start = start.and_utc().timestamp();
-                    let finish = finish.and_utc().timestamp();
-                    let dt = field_value.to_datetime()?.0.and_utc().timestamp();
-                    match op {
-                        Op::Eeq => dt == start,
-                        Op::Ene => dt != start,
-                        Op::Eq => dt >= start && dt <= finish,
-                        Op::Ne => dt < start || dt > finish,
-                        Op::Gt => dt > finish,
-                        Op::Gte => dt >= start,
-                        Op::Lt => dt < start,
-                        Op::Lte => dt <= finish,
-                        Op::In => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, false)?,
-                        Op::NotIn => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, true)?,
-                        _ => false,
+                    // If either side fails to parse, treat the comparison as a
+                    // non-match (SQL NULL-like semantics) and degrade silently —
+                    // matches the coercion behavior of the other type branches.
+                    // Without this, a typo in a date literal would propagate a
+                    // non-fatal error per file scanned, spamming stderr.
+                    match (field_value.to_datetime(), value.to_datetime()) {
+                        (Ok((field_dt, _)), Ok((start, finish))) => {
+                            let start = start.and_utc().timestamp();
+                            let finish = finish.and_utc().timestamp();
+                            let dt = field_dt.and_utc().timestamp();
+                            match op {
+                                Op::Eeq => dt == start,
+                                Op::Ene => dt != start,
+                                Op::Eq => dt >= start && dt <= finish,
+                                Op::Ne => dt < start || dt > finish,
+                                Op::Gt => dt > finish,
+                                Op::Gte => dt >= start,
+                                Op::Lt => dt < start,
+                                Op::Lte => dt <= finish,
+                                Op::In => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, false)?,
+                                Op::NotIn => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, true)?,
+                                _ => false,
+                            }
+                        }
+                        _ => match op {
+                            Op::In => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, false)?,
+                            Op::NotIn => self.check_in_list(expr, entry, file_info, root_path, &mut arg_map, &field_value, true)?,
+                            _ => false,
+                        },
                     }
                 }
             };
@@ -2037,6 +2064,69 @@ mod tests {
             !is_subquery_cacheable(&subquery),
             "subquery referencing outer alias t1 must not be cached"
         );
+    }
+
+    #[test]
+    fn where_unparseable_date_literal_no_error() {
+        // Regression: `where modified = 'not-a-date'` used to propagate a
+        // non-fatal SearchError per file scanned, spamming stderr. The fix
+        // makes the DateTime comparison branch coerce unparseable values to
+        // a non-match (false), consistent with how the Int/String/etc.
+        // branches degrade gracefully.
+        let tmp = std::env::temp_dir().join("fselect_test_bad_date_literal");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("a.txt"), "x").unwrap();
+
+        let entry = fs::read_dir(&tmp).unwrap().next().unwrap().unwrap();
+        let mut searcher = create_test_searcher();
+
+        // Build: modified = 'not-a-date'
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            crate::operators::Op::Eq,
+            Expr::value(String::from("not-a-date")),
+        );
+
+        let result = searcher.conforms(&entry, &None, &tmp, &expr);
+
+        let _ = fs::remove_dir_all(&tmp);
+
+        // Must return Ok(false), not Err(...).
+        match result {
+            Ok(matched) => assert!(!matched, "unparseable date literal must not match"),
+            Err(e) => panic!("conforms() must not propagate error for bad date literal: {}", e),
+        }
+    }
+
+    #[test]
+    fn where_unparseable_date_literal_not_equal_no_error() {
+        // Companion to the above: != against an unparseable literal must also
+        // degrade silently. We deliberately return false (SQL NULL/UNKNOWN
+        // semantics) so `=` and `!=` against a bad literal behave symmetrically
+        // — both return no rows — rather than `!=` silently matching everything.
+        let tmp = std::env::temp_dir().join("fselect_test_bad_date_literal_ne");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("a.txt"), "x").unwrap();
+
+        let entry = fs::read_dir(&tmp).unwrap().next().unwrap().unwrap();
+        let mut searcher = create_test_searcher();
+
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            crate::operators::Op::Ne,
+            Expr::value(String::from("not-a-date")),
+        );
+
+        let result = searcher.conforms(&entry, &None, &tmp, &expr);
+
+        let _ = fs::remove_dir_all(&tmp);
+
+        match result {
+            Ok(matched) => assert!(!matched),
+            Err(e) => panic!("conforms() must not propagate error for bad date literal: {}", e),
+        }
     }
 
     #[test]
