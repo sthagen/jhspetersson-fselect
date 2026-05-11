@@ -555,6 +555,31 @@ Convert a Unix timestamp (seconds since epoch) to a datetime string.
 .TP
 .BR LAST_DAY " / " LAST_DATE "(date)"
 Last day of the month for the given date.
+.TP
+.BR EXTRACT "(unit, date)"
+Extract a date/time part from
+.IR date .
+The
+.I unit
+must be a quoted string. Supported units:
+.BR year ", " quarter ", " month ", " week " (ISO), "
+.BR day ", " hour ", " minute ", " second ", "
+.BR dow " (1=Sun..7=Sat), "
+.BR isodow " (1=Mon..7=Sun), "
+.BR doy ", " epoch
+(Unix timestamp).
+.TP
+.BR DATE_TRUNC " / " DATETRUNC "(unit, date)"
+Truncate
+.I date
+to a unit boundary, returned as
+.RB \(lq YYYY\-MM\-DD\ HH:MM:SS \(rq.
+The
+.I unit
+must be a quoted string. Supported units:
+.BR year ", " quarter ", " month ", "
+.BR week " (truncates to Monday), "
+.BR day ", " hour ", " minute ", " second .
 .SS String functions
 .TP
 .BR LENGTH " / " LEN

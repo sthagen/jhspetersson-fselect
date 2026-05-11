@@ -269,6 +269,8 @@ Used mostly for formatting results.
 | DATE_DIFF or DATEDIFF               | Number of days between two dates                       | `select "date_diff(modified, created) from /home/user"`                  |
 | FROM_UNIXTIME                       | Convert a Unix timestamp to a datetime string          | `select "from_unixtime(mtime) from /home/user"`                          |
 | LAST_DAY or LAST_DATE               | Last day of the month for a given date                 | `select "last_day(modified) from /home/user"`                            |
+| EXTRACT                             | Extract a date/time part (year, quarter, month, week, day, hour, minute, second, dow, isodow, doy, epoch) — unit must be quoted | `select "extract('year', modified) from /home/user"` |
+| DATE_TRUNC or DATETRUNC             | Truncate a date to a unit (year, quarter, month, week, day, hour, minute, second) — unit must be quoted | `select "date_trunc('month', modified) from /home/user"` |
 
 #### User functions
 
