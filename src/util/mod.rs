@@ -428,8 +428,8 @@ pub fn format_filesize(size: u64, modifier: &str) -> Result<String, String> {
 pub fn str_to_bool(val: &str) -> Option<bool> {
     let str_val = val.to_ascii_lowercase();
     match str_val.as_str() {
-        "true" | "1" | "yes" | "y" | "on" => Some(true),
-        "false" | "0" | "no" | "n" | "off" => Some(false),
+        "true" | "t" | "1" | "yes" | "y" | "on" => Some(true),
+        "false" | "f" | "0" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
 }
@@ -980,5 +980,22 @@ mod tests {
             orderings,
         );
         assert_eq!(parseable.cmp(&unparseable), Ordering::Equal);
+    }
+
+    #[test]
+    fn str_to_bool_accepts_all_aliases() {
+        for v in ["true", "t", "1", "yes", "y", "on", "TRUE", "T", "Yes", "ON"] {
+            assert_eq!(str_to_bool(v), Some(true), "expected {} to be true", v);
+        }
+        for v in ["false", "f", "0", "no", "n", "off", "FALSE", "F", "No", "OFF"] {
+            assert_eq!(str_to_bool(v), Some(false), "expected {} to be false", v);
+        }
+    }
+
+    #[test]
+    fn str_to_bool_rejects_unknown() {
+        for v in ["", "maybe", "2", "tt", "ff", "truee"] {
+            assert_eq!(str_to_bool(v), None, "expected {} to be unrecognized", v);
+        }
     }
 }
