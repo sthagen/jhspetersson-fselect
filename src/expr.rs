@@ -436,6 +436,82 @@ impl Expr {
         false
     }
 
+    /// Walks the expression tree and validates string literals that are
+    /// compared against datetime fields. Returns `Err` with the first
+    /// unparseable literal so the caller can fail the query once, up front,
+    /// rather than emitting one parse error per file scanned.
+    ///
+    /// Only literals adjacent to a datetime *field* are checked — comparisons
+    /// against datetime-returning function results are not validated here
+    /// because that would require tracking function return types. Per-file
+    /// degradation in `conforms()` still catches those silently.
+    pub fn validate_datetime_literals(&self) -> Result<(), String> {
+        Self::validate_dt_node(self)
+    }
+
+    fn validate_dt_node(expr: &Expr) -> Result<(), String> {
+        if expr.op.is_some() {
+            let left_is_dt = expr
+                .left
+                .as_deref()
+                .and_then(|l| l.field.as_ref())
+                .is_some_and(Field::is_datetime_field);
+            let right_is_dt = expr
+                .right
+                .as_deref()
+                .and_then(|r| r.field.as_ref())
+                .is_some_and(Field::is_datetime_field);
+
+            if left_is_dt {
+                if let Some(ref right) = expr.right {
+                    Self::check_dt_value_side(right)?;
+                }
+            }
+            if right_is_dt {
+                if let Some(ref left) = expr.left {
+                    Self::check_dt_value_side(left)?;
+                }
+            }
+        }
+
+        if let Some(ref left) = expr.left {
+            Self::validate_dt_node(left)?;
+        }
+        if let Some(ref right) = expr.right {
+            Self::validate_dt_node(right)?;
+        }
+        if let Some(ref args) = expr.args {
+            for arg in args {
+                Self::validate_dt_node(arg)?;
+            }
+        }
+        if let Some(ref subquery) = expr.subquery {
+            if let Some(ref inner) = subquery.expr {
+                Self::validate_dt_node(inner)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate the non-field side of a comparison against a datetime field.
+    /// Recurses into IN/NotIn arg lists; tries to parse plain literal `val`s.
+    fn check_dt_value_side(expr: &Expr) -> Result<(), String> {
+        if let Some(ref args) = expr.args {
+            for arg in args {
+                Self::check_dt_value_side(arg)?;
+            }
+        }
+        if let Some(ref val) = expr.val {
+            if expr.field.is_none() && expr.function.is_none() && expr.subquery.is_none() {
+                if crate::util::parse_datetime(val).is_err() {
+                    return Err(format!("Can't parse datetime: {}", val));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn contains_colorized(&self) -> bool {
         Self::contains_colorized_field(self)
     }
@@ -821,6 +897,93 @@ mod tests {
         let map = func_expr.get_fields_required_in_subqueries("t1", true);
         assert_eq!(map.len(), 1, "Expected t1.name in args to be found, got: {:?}", map);
         assert!(map.contains_key(&Field::Name));
+    }
+
+    #[test]
+    fn validate_datetime_literals_accepts_valid_dates() {
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            Op::Eq,
+            Expr::value(String::from("2026-01-01")),
+        );
+        assert!(expr.validate_datetime_literals().is_ok());
+    }
+
+    #[test]
+    fn validate_datetime_literals_accepts_today_keyword() {
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            Op::Gt,
+            Expr::value(String::from("today")),
+        );
+        assert!(expr.validate_datetime_literals().is_ok());
+    }
+
+    #[test]
+    fn validate_datetime_literals_rejects_garbage() {
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            Op::Eq,
+            Expr::value(String::from("not-a-date")),
+        );
+        let err = expr.validate_datetime_literals().unwrap_err();
+        assert!(err.contains("not-a-date"), "expected error to mention bad literal, got: {}", err);
+    }
+
+    #[test]
+    fn validate_datetime_literals_skips_non_datetime_fields() {
+        // `name = 'not-a-date'` is a perfectly valid string comparison —
+        // validation must not flag literals when the field isn't datetime.
+        let expr = Expr::op(
+            Expr::field(Field::Name),
+            Op::Eq,
+            Expr::value(String::from("not-a-date")),
+        );
+        assert!(expr.validate_datetime_literals().is_ok());
+    }
+
+    #[test]
+    fn validate_datetime_literals_recurses_into_logical_op() {
+        // `size > 0 AND modified = 'oops'` — bad literal is in a nested arm.
+        let expr = Expr::logical_op(
+            Expr::op(
+                Expr::field(Field::Size),
+                Op::Gt,
+                Expr::value(String::from("0")),
+            ),
+            LogicalOp::And,
+            Expr::op(
+                Expr::field(Field::Modified),
+                Op::Eq,
+                Expr::value(String::from("oops")),
+            ),
+        );
+        let err = expr.validate_datetime_literals().unwrap_err();
+        assert!(err.contains("oops"));
+    }
+
+    #[test]
+    fn validate_datetime_literals_recurses_into_in_args() {
+        // `modified IN ('2026-01-01', 'bad')` — IN args are validated too.
+        let mut right = Expr::value(String::from(""));
+        right.args = Some(vec![
+            Expr::value(String::from("2026-01-01")),
+            Expr::value(String::from("bad")),
+        ]);
+        let expr = Expr::op(Expr::field(Field::Modified), Op::In, right);
+        let err = expr.validate_datetime_literals().unwrap_err();
+        assert!(err.contains("bad"));
+    }
+
+    #[test]
+    fn validate_datetime_literals_ignores_field_on_value_side() {
+        // `modified = created` — both sides are fields, no literal to validate.
+        let expr = Expr::op(
+            Expr::field(Field::Modified),
+            Op::Eq,
+            Expr::field(Field::Created),
+        );
+        assert!(expr.validate_datetime_literals().is_ok());
     }
 
     #[test]

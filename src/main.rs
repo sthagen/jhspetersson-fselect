@@ -205,15 +205,14 @@ fn main() -> ExitCode {
                                     Err(err) => error_message("pwd", &err.to_string()),
                                 }
                             } else if trimmed == "cd" || trimmed.starts_with("cd ") {
-                                let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
-                                if parts.len() < 2 {
-                                    error_message("cd", "no path specified");
-                                } else {
-                                    let _ = rl.add_history_entry(&cmd);
-                                    let new_path: String = parts.iter().skip(1).cloned().collect::<Vec<&str>>().join(" ");
-                                    match env::set_current_dir(new_path) {
-                                        Ok(()) => {}
-                                        Err(err) => error_message("cd", &err.to_string()),
+                                match extract_cd_path(&cmd) {
+                                    None => error_message("cd", "no path specified"),
+                                    Some(new_path) => {
+                                        let _ = rl.add_history_entry(&cmd);
+                                        match env::set_current_dir(new_path) {
+                                            Ok(()) => {}
+                                            Err(err) => error_message("cd", &err.to_string()),
+                                        }
                                     }
                                 }
                             } else if trimmed == "errors" || trimmed.starts_with("errors ") {
@@ -562,6 +561,19 @@ fn complete_root_options_info() {
     )
 }
 
+#[cfg(feature = "interactive")]
+fn extract_cd_path(cmd: &str) -> Option<String> {
+    let trimmed = cmd.trim();
+    let rest = trimmed.strip_prefix("cd")?;
+    // Require at least one whitespace separator after "cd", then take the
+    // remainder verbatim (preserving internal whitespace in the path).
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let path = rest.trim_start();
+    if path.is_empty() { None } else { Some(path.to_string()) }
+}
+
 fn complete_output_formats_info() {
     println!(
         "{}",
@@ -575,6 +587,28 @@ fn complete_output_formats_info() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "interactive")]
+    use super::extract_cd_path;
+
+    #[cfg(feature = "interactive")]
+    #[test]
+    fn extract_cd_path_preserves_internal_whitespace() {
+        // The REPL `cd` parser must keep the path verbatim. Previously it
+        // split on whitespace then joined with a single space, so a path
+        // containing multiple spaces was silently collapsed.
+        assert_eq!(
+            extract_cd_path("cd /foo  bar"),
+            Some(String::from("/foo  bar"))
+        );
+        assert_eq!(
+            extract_cd_path("cd /a/b\tc"),
+            Some(String::from("/a/b\tc"))
+        );
+        assert_eq!(extract_cd_path("cd /tmp"), Some(String::from("/tmp")));
+        assert_eq!(extract_cd_path("cd"), None);
+        assert_eq!(extract_cd_path("cdata /tmp"), None);
+    }
+
     #[test]
     fn test_repl_command_matching() {
         // Verify that the REPL command matching logic doesn't match partial words

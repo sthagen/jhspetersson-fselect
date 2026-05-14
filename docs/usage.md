@@ -43,6 +43,10 @@ If you leave the `from`, then current directory will be processed.
 
 What to search? Use `where` with any number of conditions.
 
+Group results with `group by` followed by one or more columns. Like `order by`, this clause
+accepts positional numeric shortcuts that refer to columns from the `select` list, for example
+`group by 1` or `group by 1, 2`.
+
 Order results like in real SQL with `order by`. All columns are supported for ordering by, 
 as well as `asc`/`desc` parameters and positional numeric shortcuts.
 
@@ -265,6 +269,8 @@ Used mostly for formatting results.
 | DATE_DIFF or DATEDIFF               | Number of days between two dates                       | `select "date_diff(modified, created) from /home/user"`                  |
 | FROM_UNIXTIME                       | Convert a Unix timestamp to a datetime string          | `select "from_unixtime(mtime) from /home/user"`                          |
 | LAST_DAY or LAST_DATE               | Last day of the month for a given date                 | `select "last_day(modified) from /home/user"`                            |
+| EXTRACT                             | Extract a date/time part (year, quarter, month, week, day, hour, minute, second, dow, isodow, doy, epoch) — unit must be quoted | `select "extract('year', modified) from /home/user"` |
+| DATE_TRUNC or DATETRUNC             | Truncate a date to a unit (year, quarter, month, week, day, hour, minute, second) — unit must be quoted | `select "date_trunc('month', modified) from /home/user"` |
 
 #### User functions
 

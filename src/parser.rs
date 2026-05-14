@@ -56,7 +56,7 @@ impl <'a> Parser<'a> {
         self.roots_parsed = true;
         let expr = self.parse_where()?;
         self.where_parsed = true;
-        let grouping_fields = self.parse_group_by()?;
+        let grouping_fields = self.parse_group_by(&fields)?;
         let (ordering_fields, ordering_asc) = self.parse_order_by(&fields)?;
         let (mut limit, limit_offset) = self.parse_limit()?;
         let mut offset = self.parse_offset()?;
@@ -1031,7 +1031,7 @@ impl <'a> Parser<'a> {
         }
     }
 
-    fn parse_group_by(&mut self) -> Result<Vec<Expr>, String> {
+    fn parse_group_by(&mut self, fields: &[Expr]) -> Result<Vec<Expr>, String> {
         let mut group_by_fields: Vec<Expr> = vec![];
 
         if let Some(Lexeme::Group) = self.next_lexeme() {
@@ -1039,7 +1039,21 @@ impl <'a> Parser<'a> {
                 loop {
                     match self.next_lexeme() {
                         Some(Lexeme::Comma) => {}
-                        Some(Lexeme::RawString(_)) | Some(Lexeme::String(_))
+                        Some(Lexeme::RawString(ref grouping_field)) => {
+                            let actual_field = match grouping_field.parse::<usize>() {
+                                Ok(idx) if idx >= 1 && idx <= fields.len() => fields[idx - 1].clone(),
+                                Ok(_) => return Err(String::from("Group by field index is out of range")),
+                                _ => {
+                                    self.drop_lexeme();
+                                    match self.parse_expr()? {
+                                        Some(expr) => expr,
+                                        None => break,
+                                    }
+                                }
+                            };
+                            group_by_fields.push(actual_field);
+                        }
+                        Some(Lexeme::String(_))
                         | Some(Lexeme::Open) | Some(Lexeme::CurlyOpen) => {
                             self.drop_lexeme();
                             match self.parse_expr()? {
@@ -2896,6 +2910,68 @@ mod tests {
         let result = p.parse(false);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unterminated quoted string"));
+    }
+
+    #[test]
+    fn group_by_positional_index() {
+        let query = "select mime, count(*) from /test group by 1";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.grouping_fields, vec![Expr::field(Field::Mime)]);
+    }
+
+    #[test]
+    fn group_by_multiple_positional_indices() {
+        let query = "select mime, name, count(*) from /test group by 1, 2";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(
+            query.grouping_fields,
+            vec![Expr::field(Field::Mime), Expr::field(Field::Name)]
+        );
+    }
+
+    #[test]
+    fn group_by_positional_same_as_named() {
+        let query1 = "select mime, count(*) from /test group by mime";
+        let mut lexer1 = Lexer::new(vec![query1.to_string()]);
+        let mut p1 = Parser::new(&mut lexer1);
+        let q1 = p1.parse(false).unwrap();
+
+        let query2 = "select mime, count(*) from /test group by 1";
+        let mut lexer2 = Lexer::new(vec![query2.to_string()]);
+        let mut p2 = Parser::new(&mut lexer2);
+        let q2 = p2.parse(false).unwrap();
+
+        assert_eq!(q1.grouping_fields, q2.grouping_fields);
+    }
+
+    #[test]
+    fn group_by_positional_index_out_of_range() {
+        let query = "select mime from /test group by 5";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let result = p.parse(false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("out of range"));
+    }
+
+    #[test]
+    fn group_by_positional_with_expression_field() {
+        let query = "select size + 1, count(*) from /test group by 1";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.grouping_fields.len(), 1);
+        assert!(query.grouping_fields[0].arithmetic_op.is_some());
     }
 
 }

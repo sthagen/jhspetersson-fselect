@@ -60,17 +60,9 @@ fn update_hgignore_filters(hgignore_filters: &mut Vec<HgignoreFilter>, path: &Pa
 }
 
 pub fn matches_hgignore_filter(hgignore_filters: &Vec<HgignoreFilter>, file_name: &str) -> bool {
-    let mut matched = false;
-
-    for hgignore_filter in hgignore_filters {
-        let is_match = hgignore_filter.regex.is_match(file_name);
-
-        if is_match {
-            matched = true;
-        }
-    }
-
-    matched
+    hgignore_filters
+        .iter()
+        .any(|filter| filter.regex.is_match(file_name))
 }
 
 enum Syntax {
@@ -101,7 +93,10 @@ fn parse_hgignore(file_path: &Path, dir_path: &Path) -> Result<Vec<HgignoreFilte
         reader
             .lines()
             .filter(|line| match line {
-                Ok(line) => !line.trim().is_empty() && !line.starts_with("#"),
+                Ok(line) => {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with('#')
+                }
                 _ => false,
             })
             .for_each(|line| {
@@ -382,5 +377,24 @@ mod tests {
     fn regexp_caret_anchored_includes_separator_windows() {
         let regex = convert_hgignore_regexp("^src/main", Path::new("C:\\repo")).unwrap();
         assert!(regex.is_match("C:\\repo\\src/main.rs"), "^-anchored pattern should match");
+    }
+
+    #[test]
+    fn matches_hgignore_filter_returns_true_when_any_matches() {
+        let filters = vec![
+            HgignoreFilter::new(Regex::new("never_matches_xyz").unwrap()),
+            HgignoreFilter::new(Regex::new("foo").unwrap()),
+            HgignoreFilter::new(Regex::new("also_never_xyz").unwrap()),
+        ];
+        assert!(matches_hgignore_filter(&filters, "some/foo/path"));
+    }
+
+    #[test]
+    fn matches_hgignore_filter_returns_false_when_none_match() {
+        let filters = vec![
+            HgignoreFilter::new(Regex::new("never_a").unwrap()),
+            HgignoreFilter::new(Regex::new("never_b").unwrap()),
+        ];
+        assert!(!matches_hgignore_filter(&filters, "some/path"));
     }
 }

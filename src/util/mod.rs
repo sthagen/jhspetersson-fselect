@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
-use chrono::{Datelike, Local, Timelike};
+use chrono::{NaiveDate, NaiveDateTime};
 use mp3_metadata::MP3Metadata;
 use regex::Regex;
 
@@ -133,20 +133,13 @@ where
     where
         T: Ord,
     {
-        let default = Local::now()
-            .naive_local()
-            .with_year(1970)
-            .unwrap()
-            .with_month(1)
-            .unwrap()
-            .with_day(1)
-            .unwrap()
-            .with_hour(0)
-            .unwrap()
-            .with_minute(0)
-            .unwrap()
-            .with_second(0)
-            .unwrap();
+        static EPOCH: LazyLock<NaiveDateTime> = LazyLock::new(|| {
+            NaiveDate::from_ymd_opt(1970, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+        });
+        let default = *EPOCH;
         let a = parse_datetime(&self.values[i].to_string())
             .unwrap_or((default, default))
             .0;
@@ -435,8 +428,8 @@ pub fn format_filesize(size: u64, modifier: &str) -> Result<String, String> {
 pub fn str_to_bool(val: &str) -> Option<bool> {
     let str_val = val.to_ascii_lowercase();
     match str_val.as_str() {
-        "true" | "1" | "yes" | "y" | "on" => Some(true),
-        "false" | "0" | "no" | "n" | "off" => Some(false),
+        "true" | "t" | "1" | "yes" | "y" | "on" => Some(true),
+        "false" | "f" | "0" | "no" | "n" | "off" => Some(false),
         _ => None,
     }
 }
@@ -734,7 +727,7 @@ pub fn get_sha3_512_file_hash(entry: &DirEntry) -> String {
 
 pub fn is_dir_empty(entry: &DirEntry) -> Option<bool> {
     match fs::read_dir(entry.path()) {
-        Ok(dir) => Some(!dir.into_iter().any(|_| true)),
+        Ok(mut dir) => Some(dir.next().is_none()),
         _ => None,
     }
 }
@@ -938,5 +931,71 @@ mod tests {
         assert_eq!(capitalize_initials("test"), String::from("Test"));
         assert_eq!(capitalize_initials("some test"), String::from("Some Test"));
         assert_eq!(capitalize_initials("превед медвед"), String::from("Превед Медвед"));
+    }
+
+    fn dir_entry_for(path: &Path) -> DirEntry {
+        let parent = path.parent().unwrap();
+        let target = path.file_name().unwrap();
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == target)
+            .unwrap()
+    }
+
+    #[test]
+    fn is_dir_empty_distinguishes_empty_and_non_empty() {
+        let base = std::env::temp_dir().join("fselect_is_dir_empty_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let empty = base.join("empty_dir");
+        fs::create_dir_all(&empty).unwrap();
+        let non_empty = base.join("non_empty_dir");
+        fs::create_dir_all(&non_empty).unwrap();
+        fs::write(non_empty.join("marker.txt"), b"x").unwrap();
+
+        assert_eq!(is_dir_empty(&dir_entry_for(&empty)), Some(true));
+        assert_eq!(is_dir_empty(&dir_entry_for(&non_empty)), Some(false));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn datetime_fallback_is_epoch_with_zero_nanos() {
+        // The unparseable-value fallback in cmp_at_datetimes should be exactly
+        // 1970-01-01 00:00:00, not 1970-01-01 00:00:00.<current nanos>.
+        // We verify this indirectly: an unparseable value should compare Equal
+        // to a parseable "1970-01-01 00:00:00".
+        let fields = Rc::new(vec![Expr::field(Field::Modified)]);
+        let orderings = Rc::new(vec![true]);
+        let parseable = Criteria::new(
+            fields.clone(),
+            vec![String::from("1970-01-01 00:00:00")],
+            orderings.clone(),
+        );
+        let unparseable = Criteria::new(
+            fields,
+            vec![String::from("not_a_date")],
+            orderings,
+        );
+        assert_eq!(parseable.cmp(&unparseable), Ordering::Equal);
+    }
+
+    #[test]
+    fn str_to_bool_accepts_all_aliases() {
+        for v in ["true", "t", "1", "yes", "y", "on", "TRUE", "T", "Yes", "ON"] {
+            assert_eq!(str_to_bool(v), Some(true), "expected {} to be true", v);
+        }
+        for v in ["false", "f", "0", "no", "n", "off", "FALSE", "F", "No", "OFF"] {
+            assert_eq!(str_to_bool(v), Some(false), "expected {} to be false", v);
+        }
+    }
+
+    #[test]
+    fn str_to_bool_rejects_unknown() {
+        for v in ["", "maybe", "2", "tt", "ff", "truee"] {
+            assert_eq!(str_to_bool(v), None, "expected {} to be unrecognized", v);
+        }
     }
 }

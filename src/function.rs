@@ -14,6 +14,9 @@ use std::time::Duration;
 use chrono::Datelike;
 use chrono::Local;
 use chrono::DateTime;
+use chrono::NaiveDate;
+use chrono::NaiveDateTime;
+use chrono::Timelike;
 use human_time::ToHumanTimeString;
 use rand::RngExt;
 use serde::ser::{Serialize, Serializer};
@@ -153,6 +156,46 @@ macro_rules! functions {
             }
         }
     }
+}
+
+/// Streams the file in fixed-size chunks searching for `needle`, with a
+/// rolling overlap of `needle.len() - 1` bytes so matches that straddle chunk
+/// boundaries are still found. Avoids the unbounded memory cost (and the
+/// UTF-8 requirement) of `read_to_string`.
+fn file_contains<R: Read>(mut reader: R, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    const CHUNK: usize = 8 * 1024;
+    let overlap = needle.len() - 1;
+    let mut buf = vec![0u8; CHUNK + overlap];
+    let mut carry = 0usize;
+
+    loop {
+        let read = match reader.read(&mut buf[carry..]) {
+            Ok(0) => return false,
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let end = carry + read;
+        if memmem(&buf[..end], needle) {
+            return true;
+        }
+        if end >= overlap {
+            buf.copy_within(end - overlap..end, 0);
+            carry = overlap;
+        } else {
+            carry = end;
+        }
+    }
+}
+
+fn memmem(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Applies a function to a value and returns the result.
@@ -626,6 +669,68 @@ pub fn get_value(
             }
             _ => Ok(Variant::empty(VariantType::String)),
         },
+        Function::Extract => {
+            if function_args.is_empty() {
+                return Err("EXTRACT requires two arguments: EXTRACT(unit, date)".to_string());
+            }
+            let dt = match parse_datetime(&function_args[0]) {
+                Ok(d) => d.0,
+                _ => return Ok(Variant::empty(VariantType::Int)),
+            };
+            let unit = function_arg.to_ascii_lowercase();
+            match unit.as_str() {
+                "year" | "years" | "yr" => Ok(Variant::from_int(dt.year() as i64)),
+                "quarter" | "quarters" => Ok(Variant::from_int(((dt.month() - 1) / 3 + 1) as i64)),
+                "month" | "months" | "mon" => Ok(Variant::from_int(dt.month() as i64)),
+                "week" | "weeks" => Ok(Variant::from_int(dt.iso_week().week() as i64)),
+                "day" | "days" => Ok(Variant::from_int(dt.day() as i64)),
+                "hour" | "hours" => Ok(Variant::from_int(dt.hour() as i64)),
+                "minute" | "minutes" | "min" => Ok(Variant::from_int(dt.minute() as i64)),
+                "second" | "seconds" | "sec" => Ok(Variant::from_int(dt.second() as i64)),
+                "dow" | "dayofweek" => Ok(Variant::from_int(dt.weekday().number_from_sunday() as i64)),
+                "isodow" => Ok(Variant::from_int(dt.weekday().number_from_monday() as i64)),
+                "doy" | "dayofyear" => Ok(Variant::from_int(dt.ordinal() as i64)),
+                "epoch" | "unixtime" => Ok(Variant::from_int(dt.and_utc().timestamp())),
+                _ => Err(format!("Unsupported EXTRACT unit: {}", function_arg)),
+            }
+        }
+        Function::DateTrunc => {
+            if function_args.is_empty() {
+                return Err("DATE_TRUNC requires two arguments: DATE_TRUNC(unit, date)".to_string());
+            }
+            let dt = match parse_datetime(&function_args[0]) {
+                Ok(d) => d.0,
+                _ => return Ok(Variant::empty(VariantType::String)),
+            };
+            let unit = function_arg.to_ascii_lowercase();
+            let truncated: Option<NaiveDateTime> = match unit.as_str() {
+                "year" | "years" => NaiveDate::from_ymd_opt(dt.year(), 1, 1)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                "quarter" | "quarters" => {
+                    let m = ((dt.month() - 1) / 3) * 3 + 1;
+                    NaiveDate::from_ymd_opt(dt.year(), m, 1).and_then(|d| d.and_hms_opt(0, 0, 0))
+                }
+                "month" | "months" => NaiveDate::from_ymd_opt(dt.year(), dt.month(), 1)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0)),
+                "week" | "weeks" => {
+                    // Truncate to Monday (ISO week start)
+                    let offset = dt.weekday().num_days_from_monday() as i64;
+                    let date = dt.date();
+                    chrono::Duration::try_days(offset)
+                        .and_then(|dur| date.checked_sub_signed(dur))
+                        .and_then(|d| d.and_hms_opt(0, 0, 0))
+                }
+                "day" | "days" => dt.date().and_hms_opt(0, 0, 0),
+                "hour" | "hours" => dt.date().and_hms_opt(dt.hour(), 0, 0),
+                "minute" | "minutes" => dt.date().and_hms_opt(dt.hour(), dt.minute(), 0),
+                "second" | "seconds" => Some(dt),
+                _ => return Err(format!("Unsupported DATE_TRUNC unit: {}", function_arg)),
+            };
+            match truncated {
+                Some(t) => Ok(Variant::from_string(&format_datetime(&t))),
+                None => Ok(Variant::empty(VariantType::String)),
+            }
+        }
 
         #[cfg(all(unix, feature = "users"))]
         Function::CurrentUid => Ok(Variant::from_int(uzers::get_current_uid() as i64)),
@@ -652,15 +757,8 @@ pub fn get_value(
             }
 
             if let Some(entry) = entry {
-                if let Ok(mut f) = File::open(entry.path()) {
-                    let mut contents = String::new();
-                    if f.read_to_string(&mut contents).is_ok() {
-                        if contents.contains(&function_arg) {
-                            return Ok(Variant::from_bool(true));
-                        } else {
-                            return Ok(Variant::from_bool(false));
-                        }
-                    }
+                if let Ok(file) = File::open(entry.path()) {
+                    return Ok(Variant::from_bool(file_contains(file, function_arg.as_bytes())));
                 }
             }
 
@@ -1205,6 +1303,16 @@ functions! {
         @group = "Datetime"
         @description = "Get the last day of the month for a given date"
         LastDay,
+
+        #[text = ["extract"], data_type = "numeric"]
+        @group = "Datetime"
+        @description = "Extract a date/time part (year, month, day, hour, minute, second, week, quarter, dow, doy, epoch) from a date. Usage: EXTRACT('year', date)"
+        Extract,
+
+        #[text = ["date_trunc", "datetrunc"]]
+        @group = "Datetime"
+        @description = "Truncate a date to a unit (year, quarter, month, week, day, hour, minute, second). Usage: DATE_TRUNC('day', date)"
+        DateTrunc,
 
         #[text = ["current_uid"], data_type = "numeric"]
         @weight = 1
@@ -2201,6 +2309,305 @@ mod tests {
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
         assert!(result.is_ok(), "LAST_DAY should not panic on edge dates");
+    }
+
+    #[test]
+    fn function_extract_year() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("year"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 2023);
+    }
+
+    #[test]
+    fn function_extract_month_uppercase() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("MONTH"),
+            vec![String::from("2023-10-15")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 10);
+    }
+
+    #[test]
+    fn function_extract_day() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("day"),
+            vec![String::from("2023-10-15")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 15);
+    }
+
+    #[test]
+    fn function_extract_hour() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("hour"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 12);
+    }
+
+    #[test]
+    fn function_extract_minute() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("minute"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 34);
+    }
+
+    #[test]
+    fn function_extract_second() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("second"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 56);
+    }
+
+    #[test]
+    fn function_extract_quarter() {
+        // October falls in Q4
+        let result = get_value(
+            &Function::Extract,
+            String::from("quarter"),
+            vec![String::from("2023-10-15")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 4);
+        // March falls in Q1
+        let result = get_value(
+            &Function::Extract,
+            String::from("quarter"),
+            vec![String::from("2023-03-31")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 1);
+    }
+
+    #[test]
+    fn function_extract_week() {
+        // 2023-01-02 (Monday) is ISO week 1
+        let result = get_value(
+            &Function::Extract,
+            String::from("week"),
+            vec![String::from("2023-01-02")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 1);
+    }
+
+    #[test]
+    fn function_extract_doy() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("doy"),
+            vec![String::from("2023-12-31")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 365);
+    }
+
+    #[test]
+    fn function_extract_epoch() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("epoch"),
+            vec![String::from("1970-01-01 00:00:00")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), 0);
+    }
+
+    #[test]
+    fn function_extract_invalid_unit() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("century"),
+            vec![String::from("2023-10-15")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn function_extract_invalid_date() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("year"),
+            vec![String::from("not-a-date")],
+            None,
+            &None,
+        );
+        // Bad date yields empty Int, not an error (matches existing YEAR/MONTH behavior).
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn function_extract_missing_arg() {
+        let result = get_value(
+            &Function::Extract,
+            String::from("year"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn function_date_trunc_year() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("year"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-01-01 00:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_quarter() {
+        // October → Q4 starts in October
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("quarter"),
+            vec![String::from("2023-11-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-01 00:00:00");
+        // May → Q2 starts in April
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("quarter"),
+            vec![String::from("2023-05-15")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-04-01 00:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_month() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("month"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-01 00:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_week() {
+        // 2023-10-15 is a Sunday → previous Monday is 2023-10-09
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("week"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-09 00:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_day() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("day"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-15 00:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_hour() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("hour"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-15 12:00:00");
+    }
+
+    #[test]
+    fn function_date_trunc_minute() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("minute"),
+            vec![String::from("2023-10-15 12:34:56")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "2023-10-15 12:34:00");
+    }
+
+    #[test]
+    fn function_date_trunc_invalid_unit() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("decade"),
+            vec![String::from("2023-10-15")],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn function_date_trunc_invalid_date() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("year"),
+            vec![String::from("not-a-date")],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn function_date_trunc_missing_arg() {
+        let result = get_value(
+            &Function::DateTrunc,
+            String::from("year"),
+            vec![],
+            None,
+            &None,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -3238,5 +3645,77 @@ mod tests {
             &None,
         );
         assert!(result.is_err());
+    }
+
+    fn write_temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("fselect_contains_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        path
+    }
+
+    fn dir_entry_for(path: &std::path::Path) -> std::fs::DirEntry {
+        let parent = path.parent().unwrap();
+        let target = path.file_name().unwrap();
+        std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name() == target)
+            .unwrap()
+    }
+
+    #[test]
+    fn contains_finds_substring_in_non_utf8_file() {
+        // A file whose body is mostly invalid UTF-8 but contains the literal
+        // ASCII substring "needle". The streaming implementation must find it;
+        // a String-based read_to_string fails outright on invalid UTF-8 and
+        // wrongly reports the substring as absent.
+        let mut bytes: Vec<u8> = vec![0xff, 0xfe, 0xfd, 0xfc, 0x80, 0x81];
+        bytes.extend_from_slice(b"needle");
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        let path = write_temp_file("non_utf8.bin", &bytes);
+        let entry = dir_entry_for(&path);
+
+        let result = get_value(
+            &Function::Contains,
+            String::from("needle"),
+            vec![],
+            Some(&entry),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(result.to_bool(), true, "Contains should find substring even in non-UTF8 files");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn contains_finds_substring_crossing_chunk_boundary() {
+        // Force the substring to straddle a chunk boundary. The streaming
+        // implementation uses an 8KiB chunk size internally; place the needle
+        // so that part of it lies in the first chunk and the rest in the next.
+        let chunk_size: usize = 8 * 1024;
+        let needle = b"FOOBAR_BOUNDARY";
+        let prefix = chunk_size - 5;
+        let mut bytes = vec![b'a'; prefix];
+        bytes.extend_from_slice(needle);
+        bytes.extend(std::iter::repeat(b'b').take(100));
+        let path = write_temp_file("boundary.bin", &bytes);
+        let entry = dir_entry_for(&path);
+
+        let result = get_value(
+            &Function::Contains,
+            String::from("FOOBAR_BOUNDARY"),
+            vec![],
+            Some(&entry),
+            &None,
+        )
+        .unwrap();
+        assert_eq!(result.to_bool(), true, "Contains must find substrings that span chunks");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
