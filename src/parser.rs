@@ -199,11 +199,45 @@ impl <'a> Parser<'a> {
         if let RootParsingMode::From = mode {
             let mut path: String = String::from("");
             let mut root_options = RootOptions::new();
+            let mut subquery_root: Option<Query> = None;
 
             loop {
                 let lexeme = self.next_lexeme();
                 match lexeme {
                     Some(ref lexeme) => match lexeme {
+                        Lexeme::Open | Lexeme::CurlyOpen
+                            if matches!(mode, RootParsingMode::From | RootParsingMode::Comma) =>
+                        {
+                            let curly = matches!(lexeme, Lexeme::CurlyOpen);
+                            // Look ahead: only treat parenthesised group as a
+                            // subselect when it starts with SELECT. Otherwise,
+                            // surrender the paren back and stop parsing roots.
+                            match self.next_lexeme() {
+                                Some(Lexeme::Select) => {
+                                    self.lexer.push_state();
+                                    let mut sub_parser = Parser::new(&mut self.lexer);
+                                    let sub_query = sub_parser.parse(self.debug)?;
+                                    self.lexer.pop_state();
+                                    if curly {
+                                        self.push_lexeme(Lexeme::CurlyClose);
+                                    } else {
+                                        self.push_lexeme(Lexeme::Close);
+                                    }
+                                    let close_lexeme = self.next_lexeme();
+                                    let expected_close = if curly { Lexeme::CurlyClose } else { Lexeme::Close };
+                                    if close_lexeme != Some(expected_close) {
+                                        return Err(String::from("Unmatched parenthesis in FROM subselect"));
+                                    }
+                                    subquery_root = Some(sub_query);
+                                    mode = RootParsingMode::Root;
+                                }
+                                _ => {
+                                    self.drop_lexeme();
+                                    self.drop_lexeme();
+                                    break;
+                                }
+                            }
+                        }
                         Lexeme::String(s) | Lexeme::RawString(s) => match mode {
                             RootParsingMode::From | RootParsingMode::Comma => {
                                 path = s.to_string();
@@ -224,7 +258,9 @@ impl <'a> Parser<'a> {
                                         self.drop_lexeme();
                                         self.drop_lexeme();
 
-                                        if !path.is_empty() {
+                                        if let Some(sub) = subquery_root.take() {
+                                            roots.push(Root::from_subquery(sub, root_options));
+                                        } else if !path.is_empty() {
                                             roots.push(Root::new(path, root_options));
                                         }
                                         break;
@@ -235,7 +271,11 @@ impl <'a> Parser<'a> {
                                 match self.parse_root_options()? {
                                     Some(options) => root_options = options,
                                     None => {
-                                        roots.push(Root::new(path, root_options));
+                                        if let Some(sub) = subquery_root.take() {
+                                            roots.push(Root::from_subquery(sub, root_options));
+                                        } else {
+                                            roots.push(Root::new(path, root_options));
+                                        }
                                         break
                                     }
                                 }
@@ -243,7 +283,13 @@ impl <'a> Parser<'a> {
                             _ => {}
                         },
                         Lexeme::Comma => {
-                            if !path.is_empty() {
+                            if subquery_root.is_some() {
+                                let sub = subquery_root.take().unwrap();
+                                roots.push(Root::from_subquery(sub, root_options));
+                                path = String::from("");
+                                root_options = RootOptions::new();
+                                mode = RootParsingMode::Comma;
+                            } else if !path.is_empty() {
                                 roots.push(Root::new(path, root_options));
 
                                 path = String::from("");
@@ -255,7 +301,9 @@ impl <'a> Parser<'a> {
                             }
                         }
                         _ => {
-                            if !path.is_empty() {
+                            if let Some(sub) = subquery_root.take() {
+                                roots.push(Root::from_subquery(sub, root_options));
+                            } else if !path.is_empty() {
                                 roots.push(Root::new(path, root_options));
                             }
 
@@ -264,7 +312,9 @@ impl <'a> Parser<'a> {
                         }
                     },
                     None => {
-                        if !path.is_empty() {
+                        if let Some(sub) = subquery_root.take() {
+                            roots.push(Root::from_subquery(sub, root_options));
+                        } else if !path.is_empty() {
                             roots.push(Root::new(path, root_options));
                         }
                         break;
@@ -2974,4 +3024,117 @@ mod tests {
         assert!(query.grouping_fields[0].arithmetic_op.is_some());
     }
 
+    #[test]
+    fn from_subselect_basic() {
+        let query = "select name from (select path from /test depth 2)";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.fields, vec![Expr::field(Field::Name)]);
+        assert_eq!(query.roots.len(), 1);
+
+        let root = &query.roots[0];
+        assert!(root.is_subquery(), "FROM (select ...) must produce a subquery root");
+        assert_eq!(root.path, "", "subquery root must carry no filesystem path");
+
+        let inner = root.subquery.as_ref().unwrap();
+        assert_eq!(inner.fields, vec![Expr::field(Field::Path)]);
+        assert_eq!(
+            inner.roots,
+            vec![Root::new(
+                String::from("/test"),
+                RootOptions::from(0, 2, false, false, None, None, None, Bfs, false, None),
+            )]
+        );
+    }
+
+    #[test]
+    fn from_subselect_with_outer_where_and_limit() {
+        let query = "select name from (select path from /a depth 1) where name like '%.rs' limit 10";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.limit, 10);
+        let outer_expr = query.expr.expect("outer WHERE must survive a FROM subselect");
+        assert_eq!(outer_expr.op, Some(Op::Like));
+
+        assert!(query.roots[0].is_subquery());
+        let inner = query.roots[0].subquery.as_ref().unwrap();
+        assert_eq!(inner.fields, vec![Expr::field(Field::Path)]);
+    }
+
+    #[test]
+    fn from_subselect_nested() {
+        let query = "select name from (select path from (select path from /a) where size > 0)";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        let outer_root = &query.roots[0];
+        assert!(outer_root.is_subquery());
+        let middle = outer_root.subquery.as_ref().unwrap();
+        assert_eq!(middle.roots.len(), 1);
+        assert!(
+            middle.roots[0].is_subquery(),
+            "the middle query's FROM clause must itself be a subselect root"
+        );
+        let innermost = middle.roots[0].subquery.as_ref().unwrap();
+        assert_eq!(
+            innermost.roots,
+            vec![Root::new(
+                String::from("/a"),
+                RootOptions::from(0, 0, false, false, None, None, None, Bfs, false, None),
+            )]
+        );
+    }
+
+    #[test]
+    fn from_subselect_with_alias_after_close() {
+        let query = "select src.name from (select path from /a) as src";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        let root = &query.roots[0];
+        assert!(root.is_subquery());
+        assert_eq!(
+            root.options.alias.as_deref(),
+            Some("src"),
+            "alias after a FROM subselect should attach to the subquery root"
+        );
+    }
+
+    #[test]
+    fn from_subselect_curly_braces() {
+        let query = "select name from {select path from /a}";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        let root = &query.roots[0];
+        assert!(root.is_subquery());
+        let inner = root.subquery.as_ref().unwrap();
+        assert_eq!(inner.fields, vec![Expr::field(Field::Path)]);
+    }
+
+    #[test]
+    fn from_subselect_mixed_with_plain_root() {
+        let query = "select name from (select path from /a), /b";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        let query = p.parse(false).unwrap();
+        assert!(!p.there_are_remaining_lexemes());
+
+        assert_eq!(query.roots.len(), 2);
+        assert!(query.roots[0].is_subquery());
+        assert!(!query.roots[1].is_subquery());
+        assert_eq!(query.roots[1].path, "/b");
+    }
 }

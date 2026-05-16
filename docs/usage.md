@@ -11,6 +11,7 @@ Find files with SQL-like queries.
 [Search roots](#search-roots)  
 [Operators](#operators)  
 [Arithmetic operators](#arithmetic-operators)  
+[Subqueries in the FROM clause](#subqueries-in-the-from-clause)  
 [Subqueries for IN and EXISTS](#subqueries-for-in-and-exists)  
 [Date and time specifiers](#date-and-time-specifiers)  
 [Regular expressions](#regular-expressions)  
@@ -81,7 +82,7 @@ Commas for column separation aren't needed as well. Column aliasing (with or wit
 `into` keyword specifies output format, not output table.
 
 Joins and unions are not supported (yet?).
-Subqueries have only limited support.
+Subqueries have only limited support: in `IN` / `EXISTS` predicates, and as the source of a `FROM` clause.
 
 ### Columns and fields
 
@@ -520,6 +521,32 @@ When you put a directory to search at, you can specify some options.
 | *        | mul    |
 | /        | div    |
 | %        | mod    |
+
+### Subqueries in the `FROM` clause
+
+The `FROM` clause can take a parenthesized inner query in place of (or alongside) a filesystem path.
+The inner query is executed first, and the rows it produces become the input set the outer query
+iterates over — its `WHERE`, `SELECT`, `LIMIT`, and `ORDER BY` clauses then run against that set
+without any further directory traversal.
+
+```sql
+select name from (select * from /projects depth 2)
+```
+
+You can attach options like an alias to the subselect root just like a regular root:
+
+```sql
+select src.name, src.size from (select path from /projects depth 2) as src where src.size > 1024
+```
+
+A `WHERE` clause inside the subselect filters the input set; a `WHERE` clause outside filters the
+outer rows produced from that input set:
+
+```sql
+select name from (select path from /projects depth 2 where size > 100) where name like '%.rs'
+```
+
+Subselects may be nested.
 
 ### Subqueries for `IN` and `EXISTS`
 
