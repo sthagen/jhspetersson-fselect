@@ -3040,4 +3040,67 @@ mod tests {
         assert!(matches!(lexeme, Some(Lexeme::Error(_))));
     }
 
+    #[test]
+    fn from_subselect_open_select_tokens() {
+        let mut lexer = lexer!("select name from (select * from /test depth 2)");
+
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Select));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("name"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(
+            lexer.next_lexeme(),
+            Some(Lexeme::Open),
+            "( after FROM should tokenize as Open to start a subselect"
+        );
+        assert_eq!(
+            lexer.next_lexeme(),
+            Some(Lexeme::Select),
+            "select inside a parenthesised FROM subselect must be the Select keyword"
+        );
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("*"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("/test"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("depth"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("2"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Close));
+    }
+
+    #[test]
+    fn from_subselect_with_where_inside() {
+        let mut lexer = lexer!("select name from (select path from /a where size > 0) where name like '%.rs'");
+
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Select));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("name"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Open));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Select));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("path"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("/a"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Where));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("size"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Operator(String::from(">"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("0"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Close));
+        assert_eq!(
+            lexer.next_lexeme(),
+            Some(Lexeme::Where),
+            "where after closing the FROM subselect should still be a Where keyword"
+        );
+    }
+
+    #[test]
+    fn from_subselect_curly_braces() {
+        let mut lexer = lexer!("select name from {select path from /a}");
+
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Select));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("name"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::CurlyOpen));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::Select));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("path"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::From));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::RawString(String::from("/a"))));
+        assert_eq!(lexer.next_lexeme(), Some(Lexeme::CurlyClose));
+    }
 }

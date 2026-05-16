@@ -341,6 +341,38 @@ impl<'a> Searcher<'a> {
                 _ => None,
             };
 
+            if let Some(ref inner) = root.subquery {
+                let paths = self.collect_subquery_root_paths(inner.as_ref().clone());
+                self.dir_queue.clear();
+                self.visited_dirs.clear();
+                self.hgignore_filters.clear();
+                self.dockerignore_filters.clear();
+                self.current_min_depth = 0;
+                self.current_max_depth = 0;
+                self.current_search_archives = root.options.archives;
+                self.current_apply_gitignore = root
+                    .options
+                    .gitignore
+                    .unwrap_or(self.config.gitignore.unwrap_or(false));
+                self.current_apply_hgignore = root
+                    .options
+                    .hgignore
+                    .unwrap_or(self.config.hgignore.unwrap_or(false));
+                self.current_apply_dockerignore = root
+                    .options
+                    .dockerignore
+                    .unwrap_or(self.config.dockerignore.unwrap_or(false));
+                self.current_traversal_mode = root.options.traversal;
+
+                let result = self.visit_subquery_paths(paths);
+                if let Err(err) = result {
+                    if err.is_fatal() {
+                        return Err(err);
+                    }
+                }
+                continue;
+            }
+
             self.current_root_dir = PathBuf::from(&root.path);
             self.current_min_depth = root.options.min_depth;
             self.current_max_depth = root.options.max_depth;
@@ -521,6 +553,70 @@ impl<'a> Searcher<'a> {
                       completion_time.duration_since(compute_time).as_millis());
         }
 
+        Ok(())
+    }
+
+    /// Run a FROM-clause subselect and return the list of paths it produced.
+    /// The inner query is forced to emit only the `path` field so its rows can
+    /// drive the outer query as a flat list of filesystem entries.
+    fn collect_subquery_root_paths(&mut self, mut query: Query) -> Vec<String> {
+        // Use the absolute path so visit_subquery_paths can re-resolve each
+        // result against the filesystem regardless of the inner query's root.
+        query.fields = vec![Expr::field(Field::AbsPath)];
+        query.output_format = crate::query::OutputFormat::Tabs;
+        self.get_list_from_subquery(query)
+    }
+
+    /// Treat each path produced by a FROM subselect as an input entry: resolve
+    /// it to a `DirEntry` (by reading its parent directory) and feed it through
+    /// `check_file` so the outer query's WHERE/SELECT logic can run against it
+    /// without further directory traversal.
+    fn visit_subquery_paths(&mut self, paths: Vec<String>) -> Result<(), SearchError> {
+        for path_str in paths {
+            if path_str.is_empty() {
+                continue;
+            }
+            if !self.is_buffered() && self.query.limit > 0 && self.query.limit <= self.found {
+                break;
+            }
+            let path = PathBuf::from(&path_str);
+            let parent = match path.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            let file_name = match path.file_name() {
+                Some(n) => n.to_os_string(),
+                None => continue,
+            };
+            self.current_root_dir = parent.clone();
+
+            match fs::read_dir(&parent) {
+                Ok(entries) => {
+                    let mut matched_entry: Option<DirEntry> = None;
+                    for entry in entries.flatten() {
+                        if entry.file_name() == file_name {
+                            matched_entry = Some(entry);
+                            break;
+                        }
+                    }
+                    if let Some(entry) = matched_entry {
+                        match self.check_file(&entry, &parent, &None) {
+                            Err(err) => {
+                                if err.is_fatal() {
+                                    return Err(err);
+                                }
+                                self.handle_nonfatal_error(err, &path);
+                            }
+                            Ok(()) => {}
+                        }
+                    }
+                }
+                Err(err) => {
+                    self.error_count += 1;
+                    path_error_message(&parent, err);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2150,5 +2246,125 @@ mod tests {
             raw_query: String::new(),
         };
         assert!(is_subquery_cacheable(&subquery));
+    }
+
+    /// Build a real Query via the parser+lexer and execute it silently against
+    /// a temp directory. Returns the rendered rows the outer query produced so
+    /// we can assert against them as a flat set of strings.
+    fn run_query_against_dir(query_template: &str, dir: &Path) -> Vec<String> {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        let query_string = query_template.replace("__DIR__", &dir.to_string_lossy());
+        let mut lexer = Lexer::new(vec![query_string.clone()]);
+        let mut parser = Parser::new(&mut lexer);
+        let parsed = parser.parse(false).expect("parse failed");
+        let parsed = Box::leak(Box::new(parsed));
+        let config = Box::leak(Box::new(Config::default()));
+        let default_config = Box::leak(Box::new(Config::default()));
+
+        let mut searcher = Searcher::new(parsed, config, default_config, false);
+        searcher.silent_mode = true;
+        searcher.list_search_results().expect("search failed");
+
+        searcher
+            .output_buffer
+            .iter_values()
+            .map(|s| s.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn plain_query_silent_mode_buffers_results() {
+        // Sanity check: a non-subselect query must populate output_buffer when
+        // run silently, otherwise the subselect tests below have no chance.
+        let tmp = std::env::temp_dir().join("fselect_test_plain_silent_buffer");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("one.txt"), "x").unwrap();
+        fs::write(tmp.join("two.txt"), "y").unwrap();
+
+        let rows = run_query_against_dir(
+            "select name from __DIR__ depth 1",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+        let names: HashSet<String> = rows.into_iter().collect();
+        assert!(names.contains("one.txt"), "names was {:?}", names);
+        assert!(names.contains("two.txt"));
+    }
+
+    #[test]
+    fn from_subselect_returns_inner_paths_as_input_rows() {
+        let tmp = std::env::temp_dir().join("fselect_test_from_subselect_basic");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("alpha.rs"), "// alpha").unwrap();
+        fs::write(tmp.join("beta.txt"), "beta").unwrap();
+        fs::write(tmp.join("gamma.rs"), "// gamma").unwrap();
+
+        // Outer query asks only for name, but its source is a subselect that
+        // already filtered down to the directory contents. The outer query must
+        // see all three files as input rows.
+        let rows = run_query_against_dir(
+            "select name from (select path from __DIR__ depth 1)",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+
+        let names: HashSet<String> = rows.into_iter().collect();
+        assert!(names.contains("alpha.rs"), "missing alpha.rs in {:?}", names);
+        assert!(names.contains("beta.txt"), "missing beta.txt in {:?}", names);
+        assert!(names.contains("gamma.rs"), "missing gamma.rs in {:?}", names);
+    }
+
+    #[test]
+    fn from_subselect_outer_where_filters_inner_rows() {
+        let tmp = std::env::temp_dir().join("fselect_test_from_subselect_outer_where");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("keep.rs"), "// keep").unwrap();
+        fs::write(tmp.join("skip.txt"), "skip").unwrap();
+        fs::write(tmp.join("also.rs"), "// also").unwrap();
+
+        let rows = run_query_against_dir(
+            "select name from (select path from __DIR__ depth 1) where name like '%.rs'",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+
+        let names: HashSet<String> = rows.into_iter().collect();
+        assert!(names.contains("keep.rs"));
+        assert!(names.contains("also.rs"));
+        assert!(!names.contains("skip.txt"),
+            "outer WHERE must filter rows produced by the FROM subselect");
+    }
+
+    #[test]
+    fn from_subselect_inner_where_limits_input_rows() {
+        let tmp = std::env::temp_dir().join("fselect_test_from_subselect_inner_where");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        // big.bin will be picked up; tiny.bin will be filtered out by the
+        // inner WHERE clause, so the outer query must not see it.
+        fs::write(tmp.join("big.bin"), vec![0u8; 4096]).unwrap();
+        fs::write(tmp.join("tiny.bin"), vec![0u8; 4]).unwrap();
+
+        let rows = run_query_against_dir(
+            "select name from (select path from __DIR__ depth 1 where size > 100)",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+
+        let names: HashSet<String> = rows.into_iter().collect();
+        assert!(names.contains("big.bin"));
+        assert!(
+            !names.contains("tiny.bin"),
+            "rows filtered by the inner WHERE must not reach the outer query"
+        );
     }
 }

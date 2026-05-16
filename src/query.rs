@@ -53,9 +53,12 @@ impl Query {
 
 #[derive(Debug, Clone, PartialOrd, PartialEq, Eq, Hash, Serialize)]
 /// Represents a root directory to start the search from, with traversal options.
+/// When `subquery` is present, the root represents the result set of an inner
+/// query rather than a filesystem path; `path` is unused in that case.
 pub struct Root {
     pub path: String,
     pub options: RootOptions,
+    pub subquery: Option<Box<Query>>,
 }
 
 macro_rules! root_options {
@@ -180,13 +183,22 @@ impl RootOptions {
 
 impl Root {
     pub fn new(path: String, options: RootOptions) -> Root {
-        Root { path, options }
+        Root { path, options, subquery: None }
+    }
+
+    pub fn from_subquery(subquery: Query, options: RootOptions) -> Root {
+        Root {
+            path: String::new(),
+            options,
+            subquery: Some(Box::new(subquery)),
+        }
     }
 
     pub fn default(options: Option<RootOptions>) -> Root {
         Root {
             path: String::from("."),
             options: options.unwrap_or_else(RootOptions::new),
+            subquery: None,
         }
     }
 
@@ -195,6 +207,11 @@ impl Root {
             path: new_path,
             ..source
         }
+    }
+
+    #[cfg(test)]
+    pub fn is_subquery(&self) -> bool {
+        self.subquery.is_some()
     }
 }
 
