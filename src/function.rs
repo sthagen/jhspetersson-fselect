@@ -198,6 +198,16 @@ fn memmem(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Parses `arg` as an `f64` and applies `f` to it. A value that does not parse
+/// as a number yields an empty string variant, matching the behavior shared by
+/// all the numeric functions.
+fn unary_float(arg: &str, f: impl FnOnce(f64) -> Result<Variant, String>) -> Result<Variant, String> {
+    match arg.parse::<f64>() {
+        Ok(val) => f(val),
+        Err(_) => Ok(Variant::empty(VariantType::String)),
+    }
+}
+
 /// Applies a function to a value and returns the result.
 /// If no function is provided, the original value is returned.
 ///
@@ -342,147 +352,114 @@ pub fn get_value(
             Ok(val) => Ok(Variant::from_string(&format!("{:o}", val))),
             _ => Ok(Variant::empty(VariantType::String)),
         },
-        Function::Abs => match function_arg.parse::<f64>() {
-            Ok(val) => Ok(Variant::from_float(val.abs())),
-            _ => Ok(Variant::empty(VariantType::String)),
-        }
-        Function::Power => {
-            match function_arg.parse::<f64>() {
-                Ok(val) => {
-                    let power = match function_args.first() {
-                        Some(power) => match power.parse::<f64>() {
-                            Ok(p) => p,
-                            Err(_) => return Err(format!("Could not parse exponent argument of POWER function: {}", power)),
-                        },
-                        _ => 0.0,
-                    };
+        Function::Abs => unary_float(&function_arg, |val| Ok(Variant::from_float(val.abs()))),
+        Function::Power => unary_float(&function_arg, |val| {
+            let power = match function_args.first() {
+                Some(power) => match power.parse::<f64>() {
+                    Ok(p) => p,
+                    Err(_) => return Err(format!("Could not parse exponent argument of POWER function: {}", power)),
+                },
+                _ => 0.0,
+            };
 
-                    let result = val.powf(power);
-                    if result.is_nan() || result.is_infinite() {
-                        return Err(format!("POWER({}, {}) produces a non-finite result", val, power));
-                    }
-                    Ok(Variant::from_float(result))
-                }
-                _ => Ok(Variant::empty(VariantType::String)),
+            let result = val.powf(power);
+            if result.is_nan() || result.is_infinite() {
+                return Err(format!("POWER({}, {}) produces a non-finite result", val, power));
             }
-        }
-        Function::Sqrt => match function_arg.parse::<f64>() {
-            Ok(val) if val < 0.0 => Err(format!("SQRT of a negative number: {}", val)),
-            Ok(val) => Ok(Variant::from_float(val.sqrt())),
-            _ => Ok(Variant::empty(VariantType::String)),
-        },
-        Function::Log => {
-            match function_arg.parse::<f64>() {
-                Ok(val) => {
-                    let base = match function_args.first() {
-                        Some(base) => match base.parse::<f64>() {
-                            Ok(b) => b,
-                            Err(_) => return Err(format!("Could not parse base argument of LOG function: {}", base)),
-                        },
-                        _ => 10.0,
-                    };
+            Ok(Variant::from_float(result))
+        }),
+        Function::Sqrt => unary_float(&function_arg, |val| {
+            if val < 0.0 {
+                Err(format!("SQRT of a negative number: {}", val))
+            } else {
+                Ok(Variant::from_float(val.sqrt()))
+            }
+        }),
+        Function::Log => unary_float(&function_arg, |val| {
+            let base = match function_args.first() {
+                Some(base) => match base.parse::<f64>() {
+                    Ok(b) => b,
+                    Err(_) => return Err(format!("Could not parse base argument of LOG function: {}", base)),
+                },
+                _ => 10.0,
+            };
 
-                    if val <= 0.0 {
-                        return Err(format!("LOG of a non-positive number: {}", val));
-                    }
-                    if !base.is_finite() || base <= 0.0 || base == 1.0 {
-                        return Err(format!("LOG with invalid base: {}", base));
-                    }
+            if val <= 0.0 {
+                return Err(format!("LOG of a non-positive number: {}", val));
+            }
+            if !base.is_finite() || base <= 0.0 || base == 1.0 {
+                return Err(format!("LOG with invalid base: {}", base));
+            }
 
-                    Ok(Variant::from_float(val.log(base)))
-                }
-                _ => Ok(Variant::empty(VariantType::String)),
+            Ok(Variant::from_float(val.log(base)))
+        }),
+        Function::Ln => unary_float(&function_arg, |val| {
+            if val <= 0.0 {
+                Err(format!("LN of a non-positive number: {}", val))
+            } else {
+                Ok(Variant::from_float(val.ln()))
             }
-        }
-        Function::Ln => match function_arg.parse::<f64>() {
-            Ok(val) if val <= 0.0 => Err(format!("LN of a non-positive number: {}", val)),
-            Ok(val) => Ok(Variant::from_float(val.ln())),
-            _ => Ok(Variant::empty(VariantType::String)),
-        }
-        Function::Exp => match function_arg.parse::<f64>() {
-            Ok(val) => {
-                let result = val.exp();
-                if result.is_infinite() {
-                    return Err(format!("EXP({}) overflows to infinity", val));
-                }
-                Ok(Variant::from_float(result))
+        }),
+        Function::Exp => unary_float(&function_arg, |val| {
+            let result = val.exp();
+            if result.is_infinite() {
+                return Err(format!("EXP({}) overflows to infinity", val));
             }
-            _ => Ok(Variant::empty(VariantType::String)),
-        }
-        Function::Least => {
-            match function_arg.parse::<f64>() {
-                Ok(val) => {
-                    let mut least = if val.is_finite() { val } else { f64::INFINITY };
-                    for arg in function_args {
-                        if let Ok(val) = arg.parse::<f64>() {
-                            if val.is_finite() {
-                                least = least.min(val);
-                            }
-                        }
+            Ok(Variant::from_float(result))
+        }),
+        Function::Least => unary_float(&function_arg, |val| {
+            let mut least = if val.is_finite() { val } else { f64::INFINITY };
+            for arg in function_args {
+                if let Ok(val) = arg.parse::<f64>()
+                    && val.is_finite() {
+                        least = least.min(val);
                     }
+            }
 
-                    if least.is_finite() {
-                        Ok(Variant::from_float(least))
-                    } else {
-                        Ok(Variant::empty(VariantType::String))
-                    }
-                }
-                _ => Ok(Variant::empty(VariantType::String)),
+            if least.is_finite() {
+                Ok(Variant::from_float(least))
+            } else {
+                Ok(Variant::empty(VariantType::String))
             }
-        }
-        Function::Greatest => {
-            match function_arg.parse::<f64>() {
-                Ok(val) => {
-                    let mut greatest = if val.is_finite() { val } else { f64::NEG_INFINITY };
-                    for arg in function_args {
-                        if let Ok(val) = arg.parse::<f64>() {
-                            if val.is_finite() {
-                                greatest = greatest.max(val);
-                            }
-                        }
+        }),
+        Function::Greatest => unary_float(&function_arg, |val| {
+            let mut greatest = if val.is_finite() { val } else { f64::NEG_INFINITY };
+            for arg in function_args {
+                if let Ok(val) = arg.parse::<f64>()
+                    && val.is_finite() {
+                        greatest = greatest.max(val);
                     }
+            }
 
-                    if greatest.is_finite() {
-                        Ok(Variant::from_float(greatest))
-                    } else {
-                        Ok(Variant::empty(VariantType::String))
-                    }
-                }
-                _ => Ok(Variant::empty(VariantType::String)),
+            if greatest.is_finite() {
+                Ok(Variant::from_float(greatest))
+            } else {
+                Ok(Variant::empty(VariantType::String))
             }
-        }
+        }),
         Function::Pi => {
             Ok(Variant::from_float(std::f64::consts::PI))
         }
-        Function::Floor => match function_arg.parse::<f64>() {
-            Ok(val) => Ok(Variant::from_float(val.floor())),
-            _ => Ok(Variant::empty(VariantType::String)),
-        },
-        Function::Ceil => match function_arg.parse::<f64>() {
-            Ok(val) => Ok(Variant::from_float(val.ceil())),
-            _ => Ok(Variant::empty(VariantType::String)),
-        },
-        Function::Round => match function_arg.parse::<f64>() {
-            Ok(val) => {
-                let precision: i32 = match function_args.first() {
-                    Some(p) => match p.parse::<i32>() {
-                        Ok(p) => p,
-                        Err(_) => return Err(format!("Could not parse precision argument of ROUND function: {}", p)),
-                    },
-                    _ => 0,
-                };
-                let factor = 10_f64.powi(precision);
-                let result = (val * factor).round() / factor;
-                if result.is_finite() {
-                    Ok(Variant::from_float(result))
-                } else if precision >= 0 {
-                    Ok(Variant::from_float(val))
-                } else {
-                    Ok(Variant::from_float(0.0))
-                }
+        Function::Floor => unary_float(&function_arg, |val| Ok(Variant::from_float(val.floor()))),
+        Function::Ceil => unary_float(&function_arg, |val| Ok(Variant::from_float(val.ceil()))),
+        Function::Round => unary_float(&function_arg, |val| {
+            let precision: i32 = match function_args.first() {
+                Some(p) => match p.parse::<i32>() {
+                    Ok(p) => p,
+                    Err(_) => return Err(format!("Could not parse precision argument of ROUND function: {}", p)),
+                },
+                _ => 0,
+            };
+            let factor = 10_f64.powi(precision);
+            let result = (val * factor).round() / factor;
+            if result.is_finite() {
+                Ok(Variant::from_float(result))
+            } else if precision >= 0 {
+                Ok(Variant::from_float(val))
+            } else {
+                Ok(Variant::from_float(0.0))
             }
-            _ => Ok(Variant::empty(VariantType::String)),
-        },
+        }),
 
         // ===== Japanese string functions =====
         Function::ContainsJapanese => {
@@ -517,7 +494,7 @@ pub fn get_value(
                     Some(modifier) => modifier,
                     _ => "",
                 };
-                let file_size = crate::util::format_filesize(size, modifier).unwrap_or(String::new());
+                let file_size = crate::util::format_filesize(size, modifier).unwrap_or_default();
                 return Ok(Variant::from_string(&file_size));
             }
 
@@ -756,11 +733,10 @@ pub fn get_value(
                 return Ok(Variant::empty(VariantType::Bool));
             }
 
-            if let Some(entry) = entry {
-                if let Ok(file) = File::open(entry.path()) {
+            if let Some(entry) = entry
+                && let Ok(file) = File::open(entry.path()) {
                     return Ok(Variant::from_bool(file_contains(file, function_arg.as_bytes())));
                 }
-            }
 
             Ok(Variant::empty(VariantType::Bool))
         }
@@ -802,13 +778,12 @@ pub fn get_value(
         }
         #[cfg(windows)]
         Function::Xattr => {
-            if let Some(entry) = entry {
-                if let Some(value) =
+            if let Some(entry) = entry
+                && let Some(value) =
                     crate::util::win_xattr::read_named_ads(&entry.path(), &function_arg)
                 {
                     return Ok(Variant::from_string(&value));
                 }
-            }
 
             Ok(Variant::empty(VariantType::String))
         }
@@ -1482,8 +1457,8 @@ pub struct FieldAccumulator {
 
 impl FieldAccumulator {
     pub fn push(&mut self, value: &str) {
-        if let Ok(v) = value.parse::<f64>() {
-            if v.is_finite() {
+        if let Ok(v) = value.parse::<f64>()
+            && v.is_finite() {
                 if self.count == 0 {
                     self.min = v;
                     self.max = v;
@@ -1499,7 +1474,6 @@ impl FieldAccumulator {
                     self.m2 += (v - old_mean) * (v - new_mean);
                 }
             }
-        }
     }
 }
 
@@ -1520,6 +1494,8 @@ impl GroupAccumulator {
 }
 
 #[cfg(test)]
+// 3.14 appears as arbitrary float test input, not as an approximation of PI.
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
     
@@ -1844,7 +1820,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -1856,7 +1832,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -1868,7 +1844,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -1880,7 +1856,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -1892,7 +1868,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -1904,7 +1880,7 @@ mod tests {
         let file_info = None;
 
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_bool(), true);
+        assert!(result.unwrap().to_bool());
     }
     
     #[test]
@@ -2807,7 +2783,7 @@ mod tests {
             &None,
         );
         let val = result.unwrap().to_int();
-        assert!(val >= 3 && val <= 5, "RANDOM(5,3) should return value in [3,5], got {}", val);
+        assert!((3..=5).contains(&val), "RANDOM(5,3) should return value in [3,5], got {}", val);
     }
 
     #[test]
@@ -3356,7 +3332,7 @@ mod tests {
                 &None,
             );
             let val = result.unwrap().to_int();
-            assert!(val >= 0 && val <= 1);
+            assert!((0..=1).contains(&val));
             if val == 1 {
                 saw_max = true;
             }
@@ -3376,7 +3352,7 @@ mod tests {
                 &None,
             );
             let val = result.unwrap().to_int();
-            assert!(val >= 5 && val <= 6);
+            assert!((5..=6).contains(&val));
             if val == 6 {
                 saw_max = true;
             }
@@ -3687,7 +3663,7 @@ mod tests {
             &None,
         )
         .unwrap();
-        assert_eq!(result.to_bool(), true, "Contains should find substring even in non-UTF8 files");
+        assert!(result.to_bool(), "Contains should find substring even in non-UTF8 files");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -3702,7 +3678,7 @@ mod tests {
         let prefix = chunk_size - 5;
         let mut bytes = vec![b'a'; prefix];
         bytes.extend_from_slice(needle);
-        bytes.extend(std::iter::repeat(b'b').take(100));
+        bytes.extend(std::iter::repeat_n(b'b', 100));
         let path = write_temp_file("boundary.bin", &bytes);
         let entry = dir_entry_for(&path);
 
@@ -3714,7 +3690,7 @@ mod tests {
             &None,
         )
         .unwrap();
-        assert_eq!(result.to_bool(), true, "Contains must find substrings that span chunks");
+        assert!(result.to_bool(), "Contains must find substrings that span chunks");
 
         let _ = std::fs::remove_file(&path);
     }
