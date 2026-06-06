@@ -139,6 +139,24 @@ fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
     false
 }
 
+#[cfg(any(all(windows, feature = "everything"), all(unix, feature = "plocate")))]
+fn external_index_depth(path: &Path, root_prefix: &str) -> Option<u32> {
+    let s = path.to_string_lossy();
+    let under = if cfg!(windows) {
+        s.len() >= root_prefix.len() && s[..root_prefix.len()].eq_ignore_ascii_case(root_prefix)
+    } else {
+        s.starts_with(root_prefix)
+    };
+    if !under {
+        return None;
+    }
+    let rel = &s[root_prefix.len()..];
+    if rel.is_empty() {
+        return None;
+    }
+    Some(rel.matches(std::path::MAIN_SEPARATOR).count() as u32 + 1)
+}
+
 impl<'a> Searcher<'a> {
     pub fn new(
         query: &'a Query,
@@ -397,6 +415,32 @@ impl<'a> Searcher<'a> {
                 search_upstream_dockerignore(&mut self.dockerignore_filters, &self.current_root_dir);
             }
 
+            #[cfg(all(windows, feature = "everything"))]
+            {
+                if self.config.everything.unwrap_or(false)
+                    && !self.current_search_archives
+                    && !self.current_apply_gitignore
+                    && !self.current_apply_hgignore
+                    && !self.current_apply_dockerignore
+                    && self.try_visit_with_everything(&self.current_root_dir.clone())?
+                {
+                    continue;
+                }
+            }
+
+            #[cfg(all(unix, feature = "plocate"))]
+            {
+                if self.config.plocate.unwrap_or(false)
+                    && !self.current_search_archives
+                    && !self.current_apply_gitignore
+                    && !self.current_apply_hgignore
+                    && !self.current_apply_dockerignore
+                    && self.try_visit_with_plocate(&self.current_root_dir.clone())?
+                {
+                    continue;
+                }
+            }
+
             let result = self.visit_dir(
                 &self.current_root_dir.clone(),
                 0,
@@ -638,6 +682,132 @@ impl<'a> Searcher<'a> {
         }
 
         result_values
+    }
+
+    #[cfg(all(windows, feature = "everything"))]
+    fn try_visit_with_everything(&mut self, root_dir: &Path) -> Result<bool, SearchError> {
+        let abs = match canonical_path(&root_dir.to_path_buf()) {
+            Ok(p) => p,
+            Err(_) => return Ok(false),
+        };
+
+        let paths = match crate::util::everything::query_descendants(&abs) {
+            Ok(paths) => paths,
+            Err(err) => {
+                if self.config.debug {
+                    use crate::util::everything::EverythingError;
+                    let reason = match err {
+                        EverythingError::Unavailable => String::from("SDK not available"),
+                        EverythingError::Query(code) => format!("query failed (error {})", code),
+                    };
+                    eprintln!("Everything unavailable: {}; falling back to traversal", reason);
+                }
+                return Ok(false);
+            }
+        };
+
+        self.visit_external_index_results(root_dir, abs, paths)?;
+        Ok(true)
+    }
+
+    #[cfg(all(unix, feature = "plocate"))]
+    fn try_visit_with_plocate(&mut self, root_dir: &Path) -> Result<bool, SearchError> {
+        let abs = match canonical_path(&root_dir.to_path_buf()) {
+            Ok(p) => p,
+            Err(_) => return Ok(false),
+        };
+
+        let paths = match crate::util::plocate::query_descendants(&abs) {
+            Ok(paths) => paths,
+            Err(err) => {
+                if self.config.debug {
+                    use crate::util::plocate::PlocateError;
+                    let reason = match err {
+                        PlocateError::Spawn => String::from("plocate not found"),
+                        PlocateError::Failed(code) => match code {
+                            Some(code) => format!("exited with code {}", code),
+                            None => String::from("terminated by signal"),
+                        },
+                    };
+                    eprintln!("plocate unavailable: {}; falling back to traversal", reason);
+                }
+                return Ok(false);
+            }
+        };
+
+        self.visit_external_index_results(root_dir, abs, paths)?;
+        Ok(true)
+    }
+
+    #[cfg(any(all(windows, feature = "everything"), all(unix, feature = "plocate")))]
+    fn visit_external_index_results(
+        &mut self,
+        root_dir: &Path,
+        abs: String,
+        paths: Vec<PathBuf>,
+    ) -> Result<(), SearchError> {
+        let mut prefix = abs;
+        if !prefix.ends_with(std::path::MAIN_SEPARATOR) {
+            prefix.push(std::path::MAIN_SEPARATOR);
+        }
+
+        let min_depth = self.current_min_depth;
+        let max_depth = self.current_max_depth;
+        let kept = paths
+            .into_iter()
+            .filter(|path| match external_index_depth(path, &prefix) {
+                Some(depth) => {
+                    (min_depth == 0 || depth >= min_depth)
+                        && (max_depth == 0 || depth <= max_depth)
+                }
+                None => false,
+            });
+
+        self.visit_external_index_entries(root_dir, kept)
+    }
+
+    #[cfg(any(all(windows, feature = "everything"), all(unix, feature = "plocate")))]
+    fn visit_external_index_entries(
+        &mut self,
+        root_dir: &Path,
+        paths: impl Iterator<Item = PathBuf>,
+    ) -> Result<(), SearchError> {
+        use std::ffi::OsString;
+
+        let mut by_parent: HashMap<PathBuf, HashSet<OsString>> = HashMap::new();
+        for path in paths {
+            if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+                by_parent
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .insert(name.to_os_string());
+            }
+        }
+
+        for (parent, names) in by_parent {
+            match fs::read_dir(&parent) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if !self.is_buffered() && self.query.limit > 0 && self.query.limit <= self.found {
+                            return Ok(());
+                        }
+                        if names.contains(&entry.file_name())
+                            && let Err(err) = self.check_file(&entry, root_dir, &None, None) {
+                                if err.is_fatal() {
+                                    return Err(err);
+                                }
+                                self.handle_nonfatal_error(err, &entry.path());
+                            }
+                    }
+                }
+                Err(err) => {
+                    self.error_count += 1;
+                    path_error_message(&parent, err);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Recursively explore directories starting from a given path.

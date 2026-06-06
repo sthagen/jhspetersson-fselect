@@ -801,6 +801,18 @@ pub fn get_value(
 
             Ok(Variant::empty(VariantType::Bool))
         }
+        #[cfg(windows)]
+        Function::HasExtattr => {
+            if let Some(entry) = entry
+                && let Ok(meta) = entry.metadata() {
+                    let attrs = crate::util::win_attrs::get_attrs(&meta);
+                    return Ok(Variant::from_bool(
+                        crate::util::win_attrs::has_attr(attrs, &function_arg),
+                    ));
+                }
+
+            Ok(Variant::empty(VariantType::Bool))
+        }
         #[cfg(target_os = "linux")]
         Function::HasAclEntry => {
             if let Some(entry) = entry {
@@ -813,6 +825,16 @@ pub fn get_value(
                         }
                     }
                 }
+            }
+
+            Ok(Variant::empty(VariantType::Bool))
+        }
+        #[cfg(windows)]
+        Function::HasAclEntry => {
+            if let Some(entry) = entry {
+                return Ok(Variant::from_bool(
+                    crate::util::win_acl::find_acl_entry(&entry.path(), &function_arg).is_some(),
+                ));
             }
 
             Ok(Variant::empty(VariantType::Bool))
@@ -830,6 +852,17 @@ pub fn get_value(
                     }
                 }
             }
+
+            Ok(Variant::empty(VariantType::String))
+        }
+        #[cfg(windows)]
+        Function::AclEntry => {
+            if let Some(entry) = entry
+                && let Some(acl_entry) =
+                    crate::util::win_acl::find_acl_entry(&entry.path(), &function_arg)
+                {
+                    return Ok(Variant::from_string(&acl_entry));
+                }
 
             Ok(Variant::empty(VariantType::String))
         }
@@ -851,6 +884,18 @@ pub fn get_value(
 
             Ok(Variant::empty(VariantType::Bool))
         }
+        #[cfg(windows)]
+        Function::HasDefaultAclEntry => {
+            if let Some(entry) = entry
+                && entry.path().is_dir() {
+                    return Ok(Variant::from_bool(
+                        crate::util::win_acl::find_default_acl_entry(&entry.path(), &function_arg)
+                            .is_some(),
+                    ));
+                }
+
+            Ok(Variant::empty(VariantType::Bool))
+        }
         #[cfg(target_os = "linux")]
         Function::DefaultAclEntry => {
             if let Some(entry) = entry {
@@ -866,6 +911,18 @@ pub fn get_value(
                     }
                 }
             }
+
+            Ok(Variant::empty(VariantType::String))
+        }
+        #[cfg(windows)]
+        Function::DefaultAclEntry => {
+            if let Some(entry) = entry
+                && entry.path().is_dir()
+                && let Some(acl_entry) =
+                    crate::util::win_acl::find_default_acl_entry(&entry.path(), &function_arg)
+                {
+                    return Ok(Variant::from_string(&acl_entry));
+                }
 
             Ok(Variant::empty(VariantType::String))
         }
@@ -1341,35 +1398,35 @@ functions! {
         @weight = 2
         @group = "Xattr"
         @description = "Check if the file has a specific extended file attribute flag"
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         HasExtattr,
 
         #[text = ["has_acl_entry"], data_type = "boolean"]
         @weight = 2
         @group = "Xattr"
         @description = "Check if a specific POSIX ACL entry exists"
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         HasAclEntry,
 
         #[text = ["acl_entry"]]
         @weight = 2
         @group = "Xattr"
         @description = "Get permissions of a specific POSIX ACL entry"
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         AclEntry,
 
         #[text = ["has_default_acl_entry"], data_type = "boolean"]
         @weight = 2
         @group = "Xattr"
         @description = "Check if a specific default POSIX ACL entry exists"
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         HasDefaultAclEntry,
 
         #[text = ["default_acl_entry"]]
         @weight = 2
         @group = "Xattr"
         @description = "Get permissions of a specific default POSIX ACL entry"
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         DefaultAclEntry,
 
         #[text = ["has_capability", "has_cap"], data_type = "boolean"]

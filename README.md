@@ -20,6 +20,7 @@ While it doesn't tend to fully replace traditional `find` and `ls`, **fselect** 
 * search by MIME type
 * shortcuts to common file types
 * [interactive mode](docs/usage.md#interactive-mode)
+* support for `plocate` and `Everything` indexes for lightning-fast search
 * various output formatting (CSV, JSON, and others)
 
 More is under way!
@@ -30,6 +31,11 @@ More is under way!
 
 * Install [Rust with Cargo](https://www.rust-lang.org/en-US/install.html) and its dependencies to build a binary
 * Run `cargo install fselect`
+
+You can optionally build with fast, index-backed search support: [voidtools *Everything*](https://www.voidtools.com/)
+on Windows (`--features everything`, then pass `--everything`) or [*plocate*](https://plocate.sesse.net/)
+on Linux (`--features plocate`, then pass `--plocate`). See the
+[usage guide](docs/usage.md#index-backed-search-everything--plocate) for details.
 
 #### Debian/Ubuntu
 

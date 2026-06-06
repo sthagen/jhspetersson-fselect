@@ -21,6 +21,12 @@ use windows_sys::Win32::Security::{
 const ACE_TYPE_ACCESS_ALLOWED: u8 = 0;
 const ACE_TYPE_ACCESS_DENIED: u8 = 1;
 
+/// ACE inheritance flags. An ACE that carries either of these is propagated to
+/// child objects, which is the closest Windows equivalent of a POSIX *default*
+/// ACL entry.
+const OBJECT_INHERIT_ACE: u8 = 0x01;
+const CONTAINER_INHERIT_ACE: u8 = 0x02;
+
 /// Common access mask constants for NTFS files.
 const FILE_ALL_ACCESS: u32 = 0x1F01FF;
 const FILE_MODIFY: u32 = 0x1301BF;
@@ -87,7 +93,7 @@ pub fn has_explicit_acl(path: &Path) -> bool {
 pub fn format_acl(path: &Path) -> Option<String> {
     let (p_sd, p_dacl) = get_dacl(path)?;
 
-    let result = format_explicit_aces(p_dacl);
+    let result = collect_aces(p_dacl, is_explicit).join(",");
 
     unsafe { LocalFree(p_sd as *mut core::ffi::c_void) };
 
@@ -96,6 +102,84 @@ pub fn format_acl(path: &Path) -> Option<String> {
     } else {
         Some(result)
     }
+}
+
+/// Returns all inheritable ACEs as a formatted string, mirroring `format_acl`.
+/// Inheritable ACEs are the Windows analogue of POSIX *default* ACL entries.
+/// Returns `None` if the DACL cannot be read or has no inheritable ACEs.
+pub fn format_default_acl(path: &Path) -> Option<String> {
+    let (p_sd, p_dacl) = get_dacl(path)?;
+
+    let result = collect_aces(p_dacl, is_inheritable).join(",");
+
+    unsafe { LocalFree(p_sd as *mut core::ffi::c_void) };
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+/// Returns `true` if the file at `path` has at least one inheritable ACE.
+pub fn has_default_acl(path: &Path) -> bool {
+    let Some((p_sd, p_dacl)) = get_dacl(path) else {
+        return false;
+    };
+
+    let result = !collect_aces(p_dacl, is_inheritable).is_empty();
+
+    unsafe { LocalFree(p_sd as *mut core::ffi::c_void) };
+    result
+}
+
+/// Finds the explicit ACE whose trustee matches `trustee` and returns its
+/// formatted representation (`allow:DOMAIN\User:full`). The match is
+/// case-insensitive and accepts either the full `DOMAIN\Name` trustee or just
+/// the bare account name.
+pub fn find_acl_entry(path: &Path, trustee: &str) -> Option<String> {
+    find_entry_with(path, trustee, is_explicit)
+}
+
+/// Like [`find_acl_entry`], but searches inheritable (default) ACEs.
+pub fn find_default_acl_entry(path: &Path, trustee: &str) -> Option<String> {
+    find_entry_with(path, trustee, is_inheritable)
+}
+
+fn find_entry_with(path: &Path, trustee: &str, keep: fn(u8) -> bool) -> Option<String> {
+    let (p_sd, p_dacl) = get_dacl(path)?;
+
+    let entries = collect_aces(p_dacl, keep);
+
+    unsafe { LocalFree(p_sd as *mut core::ffi::c_void) };
+
+    let trustee = trustee.trim();
+    entries.into_iter().find(|entry| entry_matches_trustee(entry, trustee))
+}
+
+/// An ACE is "explicit" (vs. inherited) when the `INHERITED_ACE` flag is unset.
+fn is_explicit(ace_flags: u8) -> bool {
+    ace_flags & (INHERITED_ACE as u8) == 0
+}
+
+/// An ACE is "inheritable" when it carries an object- or container-inherit flag.
+fn is_inheritable(ace_flags: u8) -> bool {
+    ace_flags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) != 0
+}
+
+/// Returns `true` if a formatted ACE (`type:trustee:perms`) is for the given
+/// trustee, matching either the full `DOMAIN\Name` or the bare account name.
+fn entry_matches_trustee(entry: &str, trustee: &str) -> bool {
+    let parts: Vec<&str> = entry.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let entry_trustee = parts[1];
+    entry_trustee.eq_ignore_ascii_case(trustee)
+        || entry_trustee
+            .rsplit('\\')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(trustee))
 }
 
 /// Walk the ACEs in a DACL and return true if any are non-inherited.
@@ -119,21 +203,22 @@ fn has_explicit_ace(dacl: *const WIN_ACL) -> bool {
     false
 }
 
-/// Walk the ACEs in a DACL and format all explicit (non-inherited) entries.
-fn format_explicit_aces(dacl: *const WIN_ACL) -> String {
+/// Walk the ACEs in a DACL and format all entries kept by `keep` (a predicate
+/// over the ACE flags). Returns one formatted string per matching ACE.
+fn collect_aces(dacl: *const WIN_ACL, keep: fn(u8) -> bool) -> Vec<String> {
     let acl = unsafe { &*dacl };
     let ace_count = acl.AceCount as usize;
+    let mut entries = Vec::new();
     if ace_count == 0 {
-        return String::new();
+        return entries;
     }
 
-    let mut entries = Vec::new();
     let mut ace_ptr = unsafe { (dacl as *const u8).add(size_of::<WIN_ACL>()) };
 
     for _ in 0..ace_count {
         let header = unsafe { &*(ace_ptr as *const ACE_HEADER) };
 
-        if header.AceFlags & (INHERITED_ACE as u8) == 0
+        if keep(header.AceFlags)
             && let Some(entry) = format_ace(ace_ptr, header.AceType) {
                 entries.push(entry);
             }
@@ -141,7 +226,7 @@ fn format_explicit_aces(dacl: *const WIN_ACL) -> String {
         ace_ptr = unsafe { ace_ptr.add(header.AceSize as usize) };
     }
 
-    entries.join(",")
+    entries
 }
 
 /// Format a single ACE. The ACE layout for ACCESS_ALLOWED_ACE and
@@ -223,16 +308,44 @@ fn format_sid_fallback(sid: *mut core::ffi::c_void) -> String {
     }
 }
 
+/// Generic access rights. Inherit-only ACEs (the Windows analogue of POSIX
+/// default ACL entries) frequently express permissions with these rather than
+/// the specific `FILE_*` masks.
+const GENERIC_ALL: u32 = 0x10000000;
+const GENERIC_EXECUTE: u32 = 0x20000000;
+const GENERIC_WRITE: u32 = 0x40000000;
+const GENERIC_READ: u32 = 0x80000000;
+
 /// Map an access mask to a human-readable permission string.
 fn format_access_mask(mask: u32) -> String {
     match mask {
-        FILE_ALL_ACCESS => "full".to_string(),
-        FILE_MODIFY => "modify".to_string(),
-        FILE_READ_EXECUTE => "rx".to_string(),
-        FILE_READ => "read".to_string(),
-        FILE_WRITE => "write".to_string(),
-        _ => format!("0x{:08x}", mask),
+        FILE_ALL_ACCESS => return "full".to_string(),
+        FILE_MODIFY => return "modify".to_string(),
+        FILE_READ_EXECUTE => return "rx".to_string(),
+        FILE_READ => return "read".to_string(),
+        FILE_WRITE => return "write".to_string(),
+        _ => {}
     }
+
+    // Map generic rights, common on inheritable ACEs.
+    if mask & (GENERIC_ALL | GENERIC_EXECUTE | GENERIC_WRITE | GENERIC_READ) != 0 {
+        if mask & GENERIC_ALL != 0 {
+            return "full".to_string();
+        }
+        let mut perms = String::new();
+        if mask & GENERIC_READ != 0 {
+            perms.push('r');
+        }
+        if mask & GENERIC_WRITE != 0 {
+            perms.push('w');
+        }
+        if mask & GENERIC_EXECUTE != 0 {
+            perms.push('x');
+        }
+        return perms;
+    }
+
+    format!("0x{:08x}", mask)
 }
 
 #[cfg(test)]
@@ -276,7 +389,79 @@ mod tests {
 
     #[test]
     fn test_format_access_mask_unknown() {
-        let result = format_access_mask(0x12345678);
-        assert_eq!(result, "0x12345678");
+        // A value with no recognized specific or generic bits falls back to hex.
+        let result = format_access_mask(0x00001234);
+        assert_eq!(result, "0x00001234");
+    }
+
+    #[test]
+    fn test_format_access_mask_generic() {
+        assert_eq!(format_access_mask(GENERIC_ALL), "full");
+        assert_eq!(format_access_mask(GENERIC_READ | GENERIC_EXECUTE), "rx");
+        assert_eq!(format_access_mask(GENERIC_READ), "r");
+        assert_eq!(format_access_mask(GENERIC_WRITE), "w");
+        assert_eq!(
+            format_access_mask(GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE),
+            "rwx"
+        );
+        // GENERIC_ALL dominates even when combined with other generic bits.
+        assert_eq!(format_access_mask(GENERIC_ALL | GENERIC_READ), "full");
+    }
+
+    #[test]
+    fn test_is_inheritable() {
+        assert!(is_inheritable(OBJECT_INHERIT_ACE));
+        assert!(is_inheritable(CONTAINER_INHERIT_ACE));
+        assert!(is_inheritable(OBJECT_INHERIT_ACE | INHERITED_ACE as u8));
+        assert!(!is_inheritable(0));
+        assert!(!is_inheritable(INHERITED_ACE as u8));
+    }
+
+    #[test]
+    fn test_default_acl_nonexistent() {
+        let path = Path::new(r"C:\nonexistent_fselect_default_acl_12345");
+        assert!(format_default_acl(path).is_none());
+        assert!(!has_default_acl(path));
+        assert!(find_default_acl_entry(path, "Administrators").is_none());
+    }
+
+    #[test]
+    fn test_entry_matches_trustee() {
+        let entry = r"allow:BUILTIN\Administrators:full";
+        // Full DOMAIN\Name match (case-insensitive).
+        assert!(entry_matches_trustee(entry, r"BUILTIN\Administrators"));
+        assert!(entry_matches_trustee(entry, r"builtin\administrators"));
+        // Bare account name match.
+        assert!(entry_matches_trustee(entry, "Administrators"));
+        assert!(entry_matches_trustee(entry, "administrators"));
+        // Non-matches.
+        assert!(!entry_matches_trustee(entry, "Guests"));
+        assert!(!entry_matches_trustee(entry, "BUILTIN"));
+    }
+
+    #[test]
+    fn test_entry_matches_trustee_no_domain() {
+        let entry = "deny:Everyone:write";
+        assert!(entry_matches_trustee(entry, "Everyone"));
+        assert!(entry_matches_trustee(entry, "everyone"));
+        assert!(!entry_matches_trustee(entry, "Anyone"));
+    }
+
+    #[test]
+    fn test_entry_matches_trustee_malformed() {
+        // A string that does not split into exactly three parts never matches.
+        assert!(!entry_matches_trustee("garbage", "anything"));
+        assert!(!entry_matches_trustee("allow:only_two", "only_two"));
+    }
+
+    #[test]
+    fn test_is_explicit() {
+        assert!(is_explicit(0));
+        assert!(!is_explicit(INHERITED_ACE as u8));
+    }
+
+    #[test]
+    fn test_find_acl_entry_nonexistent() {
+        assert!(find_acl_entry(Path::new(r"C:\nonexistent_fselect_acl_12345"), "Administrators").is_none());
     }
 }
