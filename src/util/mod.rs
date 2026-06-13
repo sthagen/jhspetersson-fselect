@@ -19,6 +19,8 @@ pub(crate) mod plocate;
 pub mod dimensions;
 pub mod duration;
 pub(crate) mod error;
+#[cfg(feature = "git")]
+pub(crate) mod git;
 mod glob;
 pub(crate) mod greek;
 pub(crate) mod japanese;
@@ -128,10 +130,21 @@ where
     where
         T: Ord,
     {
-        let a = parse_filesize(&self.values[i].to_string()).unwrap_or(0);
-        let b = parse_filesize(&other.values[i].to_string()).unwrap_or(0);
+        let a_str = self.values[i].to_string();
+        let b_str = other.values[i].to_string();
 
-        a.cmp(&b)
+        match (numeric_sort_key(&a_str), numeric_sort_key(&b_str)) {
+            (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+            // Numbers sort before non-numbers, so missing values land last
+            // in ascending order.
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            // Neither side is numeric: fall back to plain string order. This
+            // keeps datetime values produced by numeric expressions (e.g.
+            // `max(modified)`, formatted as fixed-width YYYY-MM-DD HH:MM:SS)
+            // in chronological order instead of collapsing every key to zero.
+            (None, None) => a_str.cmp(&b_str),
+        }
     }
 
     #[inline]
@@ -174,6 +187,16 @@ impl<T: Display + Ord> Ord for Criteria<T> {
 
         self.values.len().cmp(&other.values.len())
     }
+}
+
+/// Numeric sort key for ORDER BY comparisons: a plain integer or float, or a
+/// file size with a unit suffix ("1k", "5mb"). `None` for anything else.
+fn numeric_sort_key(s: &str) -> Option<f64> {
+    if let Ok(num) = s.parse::<f64>()
+        && num.is_finite() {
+            return Some(num);
+        }
+    parse_filesize(s).map(|size| size as f64)
 }
 
 #[cfg(windows)]
@@ -684,6 +707,133 @@ pub fn get_line_count(entry: &DirEntry) -> Option<usize> {
     None
 }
 
+#[derive(Clone)]
+pub struct ContentStats {
+    pub is_text: bool,
+    pub char_count: usize,
+    pub word_count: usize,
+    pub encoding: String,
+    pub has_bom: bool,
+    pub line_ending: String,
+}
+
+fn detect_bom(bytes: &[u8]) -> Option<(&'static str, usize)> {
+    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
+        Some(("UTF-32LE", 4))
+    } else if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+        Some(("UTF-32BE", 4))
+    } else if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        Some(("UTF-8", 3))
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        Some(("UTF-16LE", 2))
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        Some(("UTF-16BE", 2))
+    } else {
+        None
+    }
+}
+
+pub fn has_bom(entry: &DirEntry) -> bool {
+    if let Ok(mut file) = File::open(entry.path()) {
+        let mut buf = [0u8; 4];
+        if let Ok(n) = file.read(&mut buf) {
+            return detect_bom(&buf[..n]).is_some();
+        }
+    }
+    false
+}
+
+fn decode_utf16(body: &[u8], big_endian: bool) -> String {
+    let units = body.chunks_exact(2).map(|pair| {
+        if big_endian {
+            u16::from_be_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_le_bytes([pair[0], pair[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .map(|r| r.unwrap_or('\u{FFFD}'))
+        .collect()
+}
+
+fn decode_utf32(body: &[u8], big_endian: bool) -> String {
+    body.chunks_exact(4)
+        .map(|q| {
+            let value = if big_endian {
+                u32::from_be_bytes([q[0], q[1], q[2], q[3]])
+            } else {
+                u32::from_le_bytes([q[0], q[1], q[2], q[3]])
+            };
+            char::from_u32(value).unwrap_or('\u{FFFD}')
+        })
+        .collect()
+}
+
+fn detect_line_ending(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let (mut crlf, mut lf, mut cr) = (false, false, false);
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    crlf = true;
+                    i += 2;
+                    continue;
+                }
+                cr = true;
+            }
+            b'\n' => lf = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    match crlf as u8 + lf as u8 + cr as u8 {
+        0 => String::new(),
+        1 if crlf => String::from("CRLF"),
+        1 if lf => String::from("LF"),
+        1 => String::from("CR"),
+        _ => String::from("Mixed"),
+    }
+}
+
+fn compute_content_stats(bytes: &[u8]) -> ContentStats {
+    let bom = detect_bom(bytes);
+    let has_bom = bom.is_some();
+    let (encoding, bom_len) = match bom {
+        Some((name, len)) => (name.to_string(), len),
+        None => (String::new(), 0),
+    };
+    let body = &bytes[bom_len..];
+
+    let (encoding, is_text, text) = match encoding.as_str() {
+        "UTF-16LE" => (encoding, true, decode_utf16(body, false)),
+        "UTF-16BE" => (encoding, true, decode_utf16(body, true)),
+        "UTF-32LE" => (encoding, true, decode_utf32(body, false)),
+        "UTF-32BE" => (encoding, true, decode_utf32(body, true)),
+        "UTF-8" => (encoding, true, String::from_utf8_lossy(body).into_owned()),
+        _ if body.contains(&0u8) => (String::new(), false, String::new()),
+        _ if body.is_ascii() => (String::from("ASCII"), true, String::from_utf8_lossy(body).into_owned()),
+        _ => match std::str::from_utf8(body) {
+            Ok(text) => (String::from("UTF-8"), true, text.to_string()),
+            Err(_) => (String::from("ISO-8859-1"), true, body.iter().map(|&b| b as char).collect()),
+        },
+    };
+
+    ContentStats {
+        char_count: text.chars().count(),
+        word_count: text.split_whitespace().count(),
+        line_ending: detect_line_ending(&text),
+        is_text,
+        has_bom,
+        encoding,
+    }
+}
+
+pub fn get_content_stats(entry: &DirEntry) -> Option<ContentStats> {
+    fs::read(entry.path()).ok().map(|bytes| compute_content_stats(&bytes))
+}
+
 fn hash_file<D: sha1::Digest>(entry: &DirEntry) -> String {
     if let Ok(mut file) = File::open(entry.path()) {
         let mut hasher = D::new();
@@ -734,6 +884,92 @@ pub fn is_dir_empty(entry: &DirEntry) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::field::Field;
+
+    #[test]
+    fn topn_equal_criteria_keys_accumulate_values() {
+        // The grouped-results path inserts every group under equal (possibly
+        // empty) ordering criteria; none of them may be lost.
+        let fields = Rc::new(vec![]);
+        let ord = Rc::new(vec![]);
+        let mut t: TopN<Criteria<String>, Vec<(String, String)>> = TopN::limitless();
+        for i in 0..3 {
+            t.insert(
+                Criteria::new(fields.clone(), vec![], ord.clone()),
+                vec![(format!("k{}", i), String::from("v"))],
+            );
+        }
+        assert_eq!(t.iter_values().count(), 3);
+    }
+
+    #[test]
+    fn test_content_stats_ascii() {
+        let stats = compute_content_stats(b"hello world\nfoo bar baz\n");
+        assert!(stats.is_text);
+        assert_eq!(stats.encoding, "ASCII");
+        assert!(!stats.has_bom);
+        assert_eq!(stats.word_count, 5);
+        assert_eq!(stats.char_count, 24);
+        assert_eq!(stats.line_ending, "LF");
+    }
+
+    #[test]
+    fn test_content_stats_utf8_multibyte_char_count() {
+        // "héllo" + " wörld": accented chars are multi-byte in UTF-8, so the
+        // character count must be lower than the byte length.
+        let stats = compute_content_stats("héllo wörld".as_bytes());
+        assert!(stats.is_text);
+        assert_eq!(stats.encoding, "UTF-8");
+        assert_eq!(stats.char_count, 11);
+        assert_eq!(stats.word_count, 2);
+    }
+
+    #[test]
+    fn test_content_stats_utf8_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"abc");
+        let stats = compute_content_stats(&bytes);
+        assert!(stats.has_bom);
+        assert_eq!(stats.encoding, "UTF-8");
+        // The BOM is stripped before counting.
+        assert_eq!(stats.char_count, 3);
+    }
+
+    #[test]
+    fn test_content_stats_utf16le_bom() {
+        // BOM + "Hi" in UTF-16LE.
+        let bytes = [0xFF, 0xFE, b'H', 0x00, b'i', 0x00];
+        let stats = compute_content_stats(&bytes);
+        assert!(stats.is_text);
+        assert!(stats.has_bom);
+        assert_eq!(stats.encoding, "UTF-16LE");
+        assert_eq!(stats.char_count, 2);
+        assert_eq!(stats.word_count, 1);
+    }
+
+    #[test]
+    fn test_content_stats_crlf_and_mixed() {
+        assert_eq!(compute_content_stats(b"a\r\nb\r\n").line_ending, "CRLF");
+        assert_eq!(compute_content_stats(b"a\rb\r").line_ending, "CR");
+        assert_eq!(compute_content_stats(b"a\r\nb\nc").line_ending, "Mixed");
+        assert_eq!(compute_content_stats(b"no newline").line_ending, "");
+    }
+
+    #[test]
+    fn test_content_stats_binary() {
+        // A NUL byte (without a UTF-16/32 BOM) marks the content as binary.
+        let stats = compute_content_stats(&[0x00, 0x01, 0x02, b'a']);
+        assert!(!stats.is_text);
+        assert_eq!(stats.encoding, "");
+    }
+
+    #[test]
+    fn test_content_stats_latin1_fallback() {
+        // 0xE9 is "é" in Latin-1 but not valid UTF-8 on its own.
+        let stats = compute_content_stats(&[b'c', b'a', b'f', 0xE9]);
+        assert!(stats.is_text);
+        assert_eq!(stats.encoding, "ISO-8859-1");
+        assert_eq!(stats.char_count, 4);
+    }
 
     fn basic_criteria<T: Ord + Clone + Display>(vals: &[T]) -> Criteria<T> {
         let fields = Rc::new(vec![Expr::field(Field::Size); vals.len()]);
@@ -957,6 +1193,76 @@ mod tests {
         assert_eq!(is_dir_empty(&dir_entry_for(&non_empty)), Some(false));
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    fn numeric_criteria(value: &str, asc: bool) -> Criteria<String> {
+        let fields = Rc::new(vec![Expr::field(Field::Size)]);
+        let orderings = Rc::new(vec![asc]);
+        Criteria::new(fields, vec![String::from(value)], orderings)
+    }
+
+    #[test]
+    fn numeric_criteria_compares_fractional_values() {
+        // Regression: fractional sort keys (e.g. `order by size / 1024`) used
+        // to fall through the u64-only parser and collapse to 0.
+        let a = numeric_criteria("5.875", true);
+        let b = numeric_criteria("31.6875", true);
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(b.cmp(&a), Ordering::Greater);
+    }
+
+    #[test]
+    fn numeric_criteria_compares_negative_values() {
+        let a = numeric_criteria("-5", true);
+        let b = numeric_criteria("3", true);
+        assert_eq!(a.cmp(&b), Ordering::Less);
+    }
+
+    #[test]
+    fn numeric_criteria_still_supports_size_suffixes() {
+        let a = numeric_criteria("512", true);
+        let b = numeric_criteria("1k", true);
+        assert_eq!(a.cmp(&b), Ordering::Less, "1k must compare as 1024");
+    }
+
+    #[test]
+    fn numeric_criteria_sorts_numbers_before_non_numbers() {
+        let number = numeric_criteria("10", true);
+        let empty = numeric_criteria("", true);
+        assert_eq!(number.cmp(&empty), Ordering::Less);
+        assert_eq!(empty.cmp(&number), Ordering::Greater);
+    }
+
+    #[test]
+    fn datetime_values_under_numeric_expr_sort_chronologically() {
+        // `order by max(modified)`: MAX is a numeric function, so the numeric
+        // comparator is chosen, but the values are fixed-width datetimes.
+        // They must sort by string order (== chronological), not tie at 0.
+        use crate::function::Function;
+
+        let max_modified = Expr::function_left(
+            Function::Max,
+            Some(Box::new(Expr::field(Field::Modified))),
+        );
+        let fields = Rc::new(vec![max_modified]);
+
+        let make = |value: &str, asc: bool| {
+            Criteria::new(
+                fields.clone(),
+                vec![String::from(value)],
+                Rc::new(vec![asc]),
+            )
+        };
+
+        let older = make("2024-01-05 09:30:00", true);
+        let newer = make("2026-06-11 10:00:00", true);
+        assert_eq!(older.cmp(&newer), Ordering::Less);
+        assert_eq!(newer.cmp(&older), Ordering::Greater);
+
+        // Descending must invert the comparison instead of being a no-op.
+        let older_desc = make("2024-01-05 09:30:00", false);
+        let newer_desc = make("2026-06-11 10:00:00", false);
+        assert_eq!(older_desc.cmp(&newer_desc), Ordering::Greater);
     }
 
     #[test]

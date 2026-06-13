@@ -69,6 +69,8 @@ pub struct Searcher<'a> {
     current_root_dir: PathBuf,
 
     fms: FileMetadataState,
+    #[cfg(feature = "git")]
+    git_cache: crate::util::git::GitCache,
     file_map: HashMap<String, String>,
     conforms_map: HashMap<String, String>,
     subquery_cache: HashMap<String, Vec<String>>,
@@ -216,6 +218,8 @@ impl<'a> Searcher<'a> {
             current_root_dir: PathBuf::new(),
 
             fms: FileMetadataState::new(),
+            #[cfg(feature = "git")]
+            git_cache: crate::util::git::GitCache::new(),
             file_map: HashMap::new(),
             conforms_map: HashMap::new(),
             subquery_cache: HashMap::new(),
@@ -226,7 +230,7 @@ impl<'a> Searcher<'a> {
     }
 
     pub fn is_buffered(&self) -> bool {
-        self.query.is_ordered() || self.query.has_aggregate_column() || self.query.offset > 0 || self.silent_mode
+        self.query.is_ordered() || self.query.is_aggregated() || self.query.offset > 0 || self.silent_mode
     }
 
     /// Searches directories based on configured query and outputs results to stdout.
@@ -458,7 +462,7 @@ impl<'a> Searcher<'a> {
         let compute_time = std::time::Instant::now();
 
         // ======== Compute results =========
-        if self.query.has_aggregate_column() {
+        if self.query.is_aggregated() {
             if !self.query.grouping_fields.is_empty() {
                 let group_keys: Vec<String> = self
                     .query
@@ -473,12 +477,29 @@ impl<'a> Searcher<'a> {
                 let field_names: Vec<String> = self.query.fields.iter()
                     .map(|f| f.to_string().to_lowercase())
                     .collect();
-                let sorting_indices: Vec<usize> = self.query.ordering_fields.iter()
-                    .map(|f| {
-                        let name = f.to_string().to_lowercase();
-                        field_names.iter().position(|g| g == &name).unwrap_or(0)
-                    })
+                let grouping_names: Vec<String> = self.query.grouping_fields.iter()
+                    .map(|f| f.to_string().to_lowercase())
                     .collect();
+                // Map each ordering expression to its SELECT column when it is
+                // selected; otherwise it is evaluated per group below. An
+                // expression that is neither selected, an aggregate, nor a
+                // grouping column has no per-group value to sort by.
+                let mut sorting_indices: Vec<Option<usize>> =
+                    Vec::with_capacity(self.query.ordering_fields.len());
+                for ordering_expr in self.query.ordering_fields.iter() {
+                    let name = ordering_expr.to_string().to_lowercase();
+                    let index = field_names.iter().position(|g| g == &name);
+                    if index.is_none()
+                        && !ordering_expr.has_aggregate_function()
+                        && !grouping_names.contains(&name)
+                    {
+                        return Err(SearchError::fatal(format!(
+                            "Cannot order by '{}': in a GROUP BY query the ORDER BY expression must appear in the SELECT list, be an aggregate function, or be a grouping column",
+                            ordering_expr
+                        )).with_source("query"));
+                    }
+                    sorting_indices.push(index);
+                }
 
                 let mut grouped_results: TopN<Criteria<String>, Vec<(String, String)>> =
                     if self.query.limit > 0 {
@@ -501,9 +522,34 @@ impl<'a> Searcher<'a> {
                             items.push((field_name, value.to_string()));
                         }
                     }
-                    let criteria_values: Vec<String> = sorting_indices.iter()
-                        .map(|i| items.get(*i).map(|item| item.1.clone()).unwrap_or_default())
-                        .collect();
+                    let mut criteria_values: Vec<String> =
+                        Vec::with_capacity(sorting_indices.len());
+                    for (index, ordering_expr) in
+                        sorting_indices.iter().zip(self.query.ordering_fields.iter())
+                    {
+                        let value = match index {
+                            // Reuse the value already rendered for the SELECT list
+                            Some(index) => items
+                                .get(*index)
+                                .map(|item| item.1.clone())
+                                .unwrap_or_default(),
+                            // Not selected: evaluate the ordering expression
+                            // against this group's accumulator (aggregates) or
+                            // its grouping-key values in file_map.
+                            None => self
+                                .get_column_expr_value(
+                                    None,
+                                    &None,
+                                    Path::new(""),
+                                    &mut file_map,
+                                    Some(group_acc),
+                                    ordering_expr,
+                                )
+                                .map(|v| v.to_string())
+                                .unwrap_or_default(),
+                        };
+                        criteria_values.push(value);
+                    }
                     grouped_results.insert(
                         Criteria::new(ordering_fields_rc.clone(), criteria_values, ordering_asc_rc.clone()),
                         items,
@@ -1096,6 +1142,13 @@ impl<'a> Searcher<'a> {
         self.current_follow_symlinks || !file_type.is_symlink()
     }
 
+    fn is_declared_root_alias(&self, alias: &str) -> bool {
+        self.query
+            .roots
+            .iter()
+            .any(|root| root.options.alias.as_deref() == Some(alias))
+    }
+
     fn get_column_expr_value(
         &mut self,
         entry: Option<&DirEntry>,
@@ -1111,21 +1164,27 @@ impl<'a> Searcher<'a> {
 
         if let Some(captures) = FIELD_WITH_ALIAS.captures(&column_expr_str) {
             let column_expr_context_name = captures.get(1).unwrap().as_str();
-            if let Some(ref current_alias) = self.current_alias {
-                if column_expr_context_name != current_alias {
-                    let context = self.record_context.borrow();
-                    if let Some(ctx) = context.get(column_expr_context_name) {
-                        if let Some(val) = ctx.get(captures.get(2).unwrap().as_str()) {
-                            return Ok(Variant::from_string(val));
-                        } else {
-                            //TODO: this should be propagated up to the higher context
-                            return Ok(Variant::empty(VariantType::String));
-                        }
+            if self.current_alias.as_deref() == Some(column_expr_context_name) {
+                should_update_context = true;
+            } else {
+                let context = self.record_context.borrow();
+                if let Some(ctx) = context.get(column_expr_context_name) {
+                    if let Some(val) = ctx.get(captures.get(2).unwrap().as_str()) {
+                        return Ok(Variant::from_string(val));
                     } else {
-                        return Err(SearchError::fatal(format!("Invalid root alias: {}", column_expr_context_name)).with_source("query"));
+                        //TODO: this should be propagated up to the higher context
+                        return Ok(Variant::empty(VariantType::String));
                     }
-                } else {
-                    should_update_context = true;
+                }
+                // The prefix doesn't name any known root context. An explicit
+                // `alias.field` reference (or a prefix matching a declared root
+                // alias) is a query error; any other dotted string is a plain
+                // value (e.g. the literal `readme.md`) and falls through to
+                // normal evaluation.
+                if column_expr.root_alias.is_some()
+                    || self.is_declared_root_alias(column_expr_context_name)
+                {
+                    return Err(SearchError::fatal(format!("Invalid root alias: {}", column_expr_context_name)).with_source("query"));
                 }
             }
         }
@@ -1273,6 +1332,8 @@ impl<'a> Searcher<'a> {
             file_info,
             root_path,
             fms: &mut self.fms,
+            #[cfg(feature = "git")]
+            git_cache: &mut self.git_cache,
             follow_symlinks: self.current_follow_symlinks,
             config: self.config,
             default_config: self.default_config,
@@ -1329,7 +1390,7 @@ impl<'a> Searcher<'a> {
 
         self.found += 1;
 
-        if self.query.has_aggregate_column() {
+        if self.query.is_aggregated() {
             for field in self.query.get_all_fields() {
                 file_map.insert(
                     field.to_string(),
@@ -1338,8 +1399,11 @@ impl<'a> Searcher<'a> {
             }
             // Evaluate inner expressions of aggregate functions so computed values
             // (e.g. "size * 2") are stored in file_map under the correct key.
+            // Ordering expressions are included so that aggregates appearing
+            // only in ORDER BY also accumulate data during the scan.
             // Collect keys first to avoid cloning query.fields on every file.
             let aggregate_inner_exprs: Vec<_> = self.query.fields.iter()
+                .chain(self.query.ordering_fields.iter())
                 .filter_map(|column_expr| {
                     if let Some(ref func) = column_expr.function
                         && func.is_aggregate_function()
@@ -1422,7 +1486,7 @@ impl<'a> Searcher<'a> {
             );
         } else {
             try_output!(write!(std::io::stdout(), "{}", String::from(buf)),
-                        Err(SearchError::fatal("broken pipe").with_source("output")));
+                        Err(SearchError::broken_pipe()));
         }
 
         Ok(())
@@ -1910,6 +1974,71 @@ mod tests {
     }
 
     #[test]
+    fn test_is_aggregated_with_grouping_only() {
+        // GROUP BY without an aggregate in the SELECT list must still route
+        // through the grouped path (SQL collapses rows into distinct groups).
+        let query = Box::leak(Box::new(Query {
+            fields: vec![Expr::field(Field::Extension)],
+            roots: Vec::new(),
+            expr: None,
+            grouping_fields: vec![Expr::field(Field::Extension)],
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        }));
+        assert!(query.is_aggregated());
+        assert!(!query.has_aggregate_column());
+
+        let plain = create_test_searcher();
+        assert!(!plain.query.is_aggregated());
+    }
+
+    #[test]
+    fn group_by_without_aggregate_yields_distinct_groups() {
+        let tmp = std::env::temp_dir().join("fselect_test_group_no_aggregate");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("a.txt"), "1").unwrap();
+        fs::write(tmp.join("b.txt"), "22").unwrap();
+        fs::write(tmp.join("c.md"), "333").unwrap();
+
+        let query = Box::leak(Box::new(Query {
+            fields: vec![Expr::field(Field::Extension)],
+            roots: vec![Root::new(
+                tmp.to_string_lossy().to_string(),
+                RootOptions::new(),
+            )],
+            expr: None,
+            grouping_fields: vec![Expr::field(Field::Extension)],
+            ordering_fields: vec![Expr::field(Field::Extension)],
+            ordering_asc: vec![true],
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        }));
+        let config = Box::leak(Box::new(Config::default()));
+        let default_config = Box::leak(Box::new(Config::default()));
+        let mut searcher = Searcher::new(query, config, default_config, false);
+        searcher.silent_mode = true;
+
+        searcher.list_search_results().unwrap();
+
+        let rows: Vec<String> = searcher
+            .output_buffer
+            .iter_values()
+            .map(|s| s.trim_end().to_string())
+            .collect();
+        let _ = fs::remove_dir_all(&tmp);
+
+        // One row per distinct extension, not one row per file.
+        assert_eq!(rows, vec![String::from("md"), String::from("txt")]);
+    }
+
+    #[test]
     fn test_is_zip_archive() {
         let searcher = create_test_searcher();
 
@@ -1955,6 +2084,143 @@ mod tests {
         // get_column_expr_value should read the value from record_context rather than the current entry
         let v = searcher.get_column_expr_value(None, &None, root_path, &mut file_map, None, &bound_expr);
         assert_eq!(v.unwrap().to_string(), "foo.txt");
+    }
+
+    #[test]
+    fn unknown_root_alias_errors_without_current_alias() {
+        // `x.name` where no root declares alias `x` (and no alias is being
+        // processed) must be rejected instead of silently evaluating as `name`.
+        let mut searcher = create_test_searcher();
+
+        let mut bound_expr = Expr::field(Field::Name);
+        bound_expr.root_alias = Some(String::from("x"));
+
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let result = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &bound_expr,
+        );
+
+        match result {
+            Err(e) => {
+                assert!(e.is_fatal(), "unknown alias must be a fatal error");
+                assert!(
+                    e.description.contains("Invalid root alias: x"),
+                    "unexpected error message: {}",
+                    e.description
+                );
+            }
+            Ok(v) => panic!("unknown alias must not resolve, got: {}", v),
+        }
+    }
+
+    #[test]
+    fn unknown_root_alias_errors_with_current_alias() {
+        // Same as above, but while a different alias is being processed.
+        let mut searcher = create_test_searcher();
+        searcher.current_alias = Some(String::from("b"));
+
+        let mut bound_expr = Expr::field(Field::Name);
+        bound_expr.root_alias = Some(String::from("x"));
+
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let result = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &bound_expr,
+        );
+
+        assert!(
+            matches!(result, Err(ref e) if e.is_fatal() && e.description.contains("Invalid root alias: x")),
+            "unknown alias must be a fatal error, got: {:?}",
+            result.map(|v| v.to_string())
+        );
+    }
+
+    #[test]
+    fn dotted_value_literal_is_not_treated_as_alias() {
+        // A value such as the literal `readme.md` looks like `alias.field`
+        // but must evaluate to itself, not produce an alias error.
+        let mut searcher = create_test_searcher();
+
+        let literal = Expr::value(String::from("readme.md"));
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let v = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &literal,
+        );
+        assert_eq!(v.unwrap().to_string(), "readme.md");
+    }
+
+    #[test]
+    fn dotted_value_literal_with_current_alias_returns_literal() {
+        // Previously a dotted literal evaluated while processing an aliased
+        // root was misread as an alias reference and raised a fatal error.
+        let mut searcher = create_test_searcher();
+        searcher.current_alias = Some(String::from("a"));
+
+        let literal = Expr::value(String::from("readme.md"));
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let v = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &literal,
+        );
+        assert_eq!(v.unwrap().to_string(), "readme.md");
+    }
+
+    #[test]
+    fn outer_alias_resolves_from_context_without_current_alias() {
+        // Correlated-subquery shape: the sub-searcher's own root has no alias
+        // (current_alias is None) but the expression references an outer
+        // alias registered in the shared record context.
+        let mut searcher = create_test_searcher();
+
+        {
+            let mut ctx = searcher.record_context.borrow_mut();
+            let key = Field::Name.to_string();
+            ctx.insert("a".to_string(), HashMap::from([(key, String::from("outer.txt"))]));
+        }
+
+        let mut bound_expr = Expr::field(Field::Name);
+        bound_expr.root_alias = Some(String::from("a"));
+
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let v = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &bound_expr,
+        );
+        assert_eq!(v.unwrap().to_string(), "outer.txt");
+    }
+
+    #[test]
+    fn declared_alias_with_unpopulated_context_errors_for_value_expr() {
+        // `a.sz` where `sz` is not a field parses as a plain value, but when
+        // `a` is declared as a root alias it is an alias.column reference;
+        // with no context registered for `a` yet it must error rather than
+        // silently evaluate to the literal string "a.sz".
+        let mut alias_options = RootOptions::new();
+        alias_options.alias = Some(String::from("a"));
+        let query = Box::leak(Box::new(Query {
+            fields: Vec::new(),
+            roots: vec![Root::new(String::from("/tmp"), alias_options)],
+            expr: None,
+            grouping_fields: Vec::new(),
+            ordering_fields: Vec::new(),
+            ordering_asc: Vec::new(),
+            limit: 0,
+            offset: 0,
+            output_format: OutputFormat::Tabs,
+            raw_query: String::new(),
+        }));
+        let config = Box::leak(Box::new(Config::default()));
+        let default_config = Box::leak(Box::new(Config::default()));
+        let mut searcher = Searcher::new(query, config, default_config, false);
+
+        let value_expr = Expr::value(String::from("a.sz"));
+        let mut file_map: HashMap<String, String> = HashMap::new();
+        let result = searcher.get_column_expr_value(
+            None, &None, Path::new("."), &mut file_map, None, &value_expr,
+        );
+
+        assert!(
+            matches!(result, Err(ref e) if e.description.contains("Invalid root alias: a")),
+            "declared but unpopulated alias must error, got: {:?}",
+            result.map(|v| v.to_string())
+        );
     }
 
     #[cfg(unix)]

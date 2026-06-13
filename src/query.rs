@@ -39,6 +39,13 @@ impl Query {
             result.extend(column_expr.get_required_fields());
         }
 
+        // Ordering expressions may reference columns that are not selected
+        // (e.g. `select ext, count(*) ... order by max(modified)`); the
+        // aggregation scan must collect their per-file values too.
+        for ordering_expr in &self.ordering_fields {
+            result.extend(ordering_expr.get_required_fields());
+        }
+
         result
     }
 
@@ -48,6 +55,14 @@ impl Query {
 
     pub fn has_aggregate_column(&self) -> bool {
         self.fields.iter().any(|f| f.has_aggregate_function())
+    }
+
+    /// True when results are produced per group rather than per file: either
+    /// an aggregate column is selected, or GROUP BY is present. Like in SQL,
+    /// `select ext from dir group by ext` collapses rows into distinct groups
+    /// even though no aggregate function appears in the SELECT list.
+    pub fn is_aggregated(&self) -> bool {
+        self.has_aggregate_column() || !self.grouping_fields.is_empty()
     }
 }
 

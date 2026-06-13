@@ -4,6 +4,7 @@ pub mod context;
 pub mod dispatch;
 mod content_handlers;
 mod exif_handlers;
+mod git_handlers;
 mod hash_handlers;
 mod media_handlers;
 mod metadata_handlers;
@@ -274,7 +275,19 @@ fields! {
         @weight = 1
         @description = "Returns a boolean signifying whether the file path is a symlink"
         IsSymlink,
-        
+
+        #[text = ["link_target", "symlink_target"]]
+        @for_archived = true
+        @weight = 1
+        @description = "Returns the target path of the symlink, or an empty value if the file is not a symlink"
+        LinkTarget,
+
+        #[text = ["is_broken_symlink", "is_broken_link"], data_type = "boolean"]
+        @for_archived = true
+        @weight = 1
+        @description = "Returns a boolean signifying whether the file path is a symlink whose target does not exist"
+        IsBrokenSymlink,
+
         #[text = ["is_pipe", "is_fifo"], data_type = "boolean"]
         @for_archived = true
         @weight = 1
@@ -515,7 +528,54 @@ fields! {
         @weight = 2
         @description = "Returns a boolean signifying whether the file starts with a shebang (#!)"
         IsShebang,
-        
+
+        #[text = ["is_git_repo"], data_type = "boolean"]
+        @weight = 1
+        @description = "Returns a boolean signifying whether the directory contains a .git subdirectory or file (i.e., is the root of a git repository)"
+        IsGitRepo,
+
+        #[text = ["is_git_tracked", "git_tracked"], data_type = "boolean"]
+        @weight = 16
+        @description = "Returns a boolean signifying whether the file is tracked by git"
+        #[cfg(feature = "git")]
+        IsGitTracked,
+
+        #[text = ["is_gitignored", "is_git_ignored"], data_type = "boolean"]
+        @weight = 16
+        @description = "Returns a boolean signifying whether the file is ignored by git"
+        #[cfg(feature = "git")]
+        IsGitignored,
+
+        #[text = ["git_status"]]
+        @weight = 16
+        @description = "Returns the git status of the file (clean, modified, staged, untracked, conflicted, or ignored)"
+        #[cfg(feature = "git")]
+        GitStatus,
+
+        #[text = ["git_branch"]]
+        @weight = 16
+        @description = "Returns the current branch of the git repository containing the file"
+        #[cfg(feature = "git")]
+        GitBranch,
+
+        #[text = ["git_last_commit_hash", "git_commit_hash"]]
+        @weight = 1024
+        @description = "Returns the hash of the last commit that touched the file"
+        #[cfg(feature = "git")]
+        GitLastCommitHash,
+
+        #[text = ["git_last_commit_date", "git_commit_date"], data_type = "datetime"]
+        @weight = 1024
+        @description = "Returns the date of the last commit that touched the file"
+        #[cfg(feature = "git")]
+        GitLastCommitDate,
+
+        #[text = ["git_last_commit_author", "git_commit_author"]]
+        @weight = 1024
+        @description = "Returns the author of the last commit that touched the file"
+        #[cfg(feature = "git")]
+        GitLastCommitAuthor,
+
         #[text = ["is_empty"], data_type = "boolean"]
         @for_archived = true
         @weight = 2
@@ -776,7 +836,32 @@ fields! {
         @weight = 1024
         @description = "Returns a number of lines in a text file"
         LineCount,
-        
+
+        #[text = ["word_count", "words"], data_type = "numeric"]
+        @weight = 1024
+        @description = "Returns the number of whitespace-separated words in a text file"
+        WordCount,
+
+        #[text = ["char_count", "chars"], data_type = "numeric"]
+        @weight = 1024
+        @description = "Returns the number of characters in a text file"
+        CharCount,
+
+        #[text = ["encoding"]]
+        @weight = 1024
+        @description = "Returns the detected text encoding of the file (e.g., ASCII, UTF-8, UTF-16LE), or an empty value for binary files"
+        Encoding,
+
+        #[text = ["has_bom"], data_type = "boolean"]
+        @weight = 16
+        @description = "Returns a boolean signifying whether the file begins with a byte-order mark (BOM)"
+        HasBom,
+
+        #[text = ["line_ending", "line_endings", "eol"]]
+        @weight = 1024
+        @description = "Returns the line ending style of a text file (LF, CRLF, CR, Mixed, or empty)"
+        LineEnding,
+
         #[text = ["is_binary"], data_type = "boolean"]
         @weight = 16
         @description = "Returns a boolean signifying whether the file has binary contents"

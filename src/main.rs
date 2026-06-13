@@ -83,16 +83,14 @@ fn main() -> ExitCode {
 
     let mut first_arg = args[0].to_ascii_lowercase();
 
-    if first_arg.contains("version") || first_arg.starts_with("-v") {
+    // Flags are matched exactly: a quoted query is a single argument and may
+    // well contain words like "version" or "help" (e.g. "exif_version from .").
+    if matches!(first_arg.as_str(), "version" | "-v" | "--version" | "/version") {
         short_usage_info(no_color);
         return ExitCode::SUCCESS;
     }
 
-    if first_arg.contains("help")
-        || first_arg.starts_with("-h")
-        || first_arg.starts_with("/?")
-        || first_arg.starts_with("/h")
-    {
+    if matches!(first_arg.as_str(), "help" | "-h" | "--help" | "-help" | "/?" | "/h" | "/help") {
         usage_info(config, default_config, no_color);
         return ExitCode::SUCCESS;
     }
@@ -121,18 +119,12 @@ fn main() -> ExitCode {
     let mut interactive = false;
 
     loop {
-        if first_arg.contains("nocolor") || first_arg.contains("no-color") {
+        if matches!(first_arg.as_str(), "--nocolor" | "--no-color" | "-nocolor" | "/nocolor") {
             no_color = true;
-        } else if first_arg.starts_with("-i")
-            || first_arg.starts_with("--i")
-            || first_arg.starts_with("/i")
-        {
+        } else if matches!(first_arg.as_str(), "-i" | "--interactive" | "/i") {
             #[cfg(feature = "interactive")]
             { interactive = true; }
-        } else if first_arg.starts_with("-c")
-            || first_arg.starts_with("--config")
-            || first_arg.starts_with("/c")
-        {
+        } else if matches!(first_arg.as_str(), "-c" | "--config" | "/c" | "/config") {
             if args.len() < 2 {
                 eprintln!("Error: --config requires a path argument");
                 return ExitCode::from(2);
@@ -145,13 +137,13 @@ fn main() -> ExitCode {
             });
 
             args.remove(0);
-        } else if first_arg.starts_with("--no-error") {
+        } else if matches!(first_arg.as_str(), "--no-error" | "--no-errors") {
             set_no_errors(true);
-        } else if first_arg.starts_with("--us-date") {
+        } else if matches!(first_arg.as_str(), "--us-date" | "--us-dates") {
             set_us_dates(true);
-        } else if first_arg.starts_with("--everything") {
+        } else if first_arg == "--everything" {
             config.everything = Some(true);
-        } else if first_arg.starts_with("--plocate") {
+        } else if first_arg == "--plocate" {
             config.plocate = Some(true);
         } else {
             break;
@@ -324,17 +316,23 @@ fn exec_search(query: Vec<String>, config: &mut Config, default_config: &Config,
             let use_colors = !no_color && is_terminal && query.output_format.supports_colorization();
 
             let mut searcher = Searcher::new(&query, config, default_config, use_colors);
+            let mut abort_code: Option<u8> = None;
             if let Err(mut err) = searcher.list_search_results() {
-                if err.source.is_empty() {
-                    err.source = "result".to_string();
+                // A consumer that stops reading our output (e.g. piping into
+                // `head`) ends the search early but is not a failure.
+                if !err.is_broken_pipe() {
+                    if err.source.is_empty() {
+                        err.source = "result".to_string();
+                    }
+                    err.print();
+                    abort_code = Some(if err.is_fatal() { 2 } else { 1 });
                 }
-                err.print();
             }
 
-            let error_count = searcher.error_count;
-            match error_count {
-                0 => 0,
-                _ => 1,
+            match abort_code {
+                Some(code) => code,
+                None if searcher.error_count > 0 => 1,
+                None => 0,
             }
         }
         Err(err) => {
@@ -589,6 +587,55 @@ fn complete_output_formats_info() {
 mod tests {
     #[cfg(feature = "interactive")]
     use super::extract_cd_path;
+    use super::exec_search;
+    use crate::config::Config;
+
+    fn run_query(query: &str) -> u8 {
+        let mut config = Config::default();
+        let default_config = Config::default();
+        exec_search(vec![String::from(query)], &mut config, &default_config, true)
+    }
+
+    /// Creates a temp dir with one file and returns its forward-slash path.
+    fn make_test_dir(name: &str) -> (std::path::PathBuf, String) {
+        let tmp = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.txt"), "x").unwrap();
+        let path = tmp.to_string_lossy().replace('\\', "/");
+        (tmp, path)
+    }
+
+    #[test]
+    fn exec_search_returns_0_on_success() {
+        let (tmp, path) = make_test_dir("fselect_exit_code_ok");
+        let code = run_query(&format!("name from {}", path));
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn exec_search_returns_1_on_nonfatal_io_error() {
+        let (tmp, path) = make_test_dir("fselect_exit_code_io");
+        let code = run_query(&format!("name from {}/no_such_subdir", path));
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn exec_search_returns_2_on_fatal_search_error() {
+        // An unknown root alias aborts the search with a fatal error, which
+        // must surface as a non-zero exit code (previously it exited 0).
+        let (tmp, path) = make_test_dir("fselect_exit_code_fatal");
+        let code = run_query(&format!("name, x.name from {}", path));
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn exec_search_returns_2_on_parse_error() {
+        assert_eq!(run_query(","), 2);
+    }
 
     #[cfg(feature = "interactive")]
     #[test]

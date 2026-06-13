@@ -9,6 +9,8 @@ use uzers::UsersCache;
 use crate::config::Config;
 use crate::fileinfo::FileInfo;
 use crate::util::*;
+#[cfg(feature = "git")]
+use crate::util::git::GitCache;
 use crate::util::dimensions::get_dimensions;
 use crate::util::duration::get_duration;
 
@@ -16,6 +18,7 @@ pub struct FileMetadataState {
     pub(crate) file_metadata: Option<Option<Metadata>>,
     pub(crate) entry_file_type: Option<Option<FileType>>,
     pub(crate) line_count: Option<Option<usize>>,
+    pub(crate) content_stats: Option<Option<ContentStats>>,
     pub(crate) dimensions: Option<Option<Dimensions>>,
     pub(crate) duration: Option<Option<Duration>>,
     pub(crate) mp3_metadata: Option<Option<MP3Metadata>>,
@@ -33,6 +36,7 @@ impl FileMetadataState {
             file_metadata: None,
             entry_file_type: None,
             line_count: None,
+            content_stats: None,
             dimensions: None,
             duration: None,
             mp3_metadata: None,
@@ -99,6 +103,16 @@ impl FileMetadataState {
 
     pub fn get_line_count(&self) -> Option<usize> {
         self.line_count.flatten()
+    }
+
+    pub fn update_content_stats(&mut self, entry: &DirEntry) {
+        if self.content_stats.is_none() {
+            self.content_stats = Some(get_content_stats(entry));
+        }
+    }
+
+    pub fn get_content_stats(&self) -> Option<&ContentStats> {
+        self.content_stats.as_ref().and_then(|o| o.as_ref())
     }
 
     pub fn update_mp3_metadata(&mut self, entry: &DirEntry) {
@@ -196,6 +210,8 @@ pub struct FieldContext<'a> {
     pub file_info: &'a Option<FileInfo>,
     pub root_path: &'a Path,
     pub fms: &'a mut FileMetadataState,
+    #[cfg(feature = "git")]
+    pub git_cache: &'a mut GitCache,
     pub follow_symlinks: bool,
     pub config: &'a Config,
     pub default_config: &'a Config,
@@ -214,6 +230,7 @@ mod tests {
         assert!(state.file_metadata.is_none());
         assert!(state.entry_file_type.is_none());
         assert!(state.line_count.is_none());
+        assert!(state.content_stats.is_none());
         assert!(state.dimensions.is_none());
         assert!(state.duration.is_none());
         assert!(state.mp3_metadata.is_none());
@@ -232,6 +249,7 @@ mod tests {
         state.file_metadata = Some(None);
         state.entry_file_type = Some(None);
         state.line_count = Some(None);
+        state.content_stats = Some(None);
         state.dimensions = Some(None);
         state.duration = Some(None);
         state.mp3_metadata = Some(None);
@@ -247,6 +265,7 @@ mod tests {
         assert!(state.file_metadata.is_none());
         assert!(state.entry_file_type.is_none());
         assert!(state.line_count.is_none());
+        assert!(state.content_stats.is_none());
         assert!(state.dimensions.is_none());
         assert!(state.duration.is_none());
         assert!(state.mp3_metadata.is_none());
