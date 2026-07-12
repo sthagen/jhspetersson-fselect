@@ -50,6 +50,19 @@ pub fn is_audio_ext(ext_lowercase: &str) -> bool {
     )
 }
 
+/// Extract a year from a tag value: either a leading 4-digit year (possibly
+/// followed by the rest of a date, e.g. `2023-05-01`) or a value that is
+/// nothing but a shorter year (e.g. `800`). Longer digit runs are not years.
+fn parse_year(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let digit_count = value.chars().take_while(|c| c.is_ascii_digit()).count();
+    match digit_count {
+        4 => value[..4].parse().ok(),
+        1..=3 if digit_count == value.len() => value.parse().ok(),
+        _ => None,
+    }
+}
+
 /// Format a number paired with an optional total as `n/total`, or just `n`
 /// when no total is present.
 fn format_numbered(value: Option<u32>, total: Option<u32>) -> Option<String> {
@@ -71,12 +84,13 @@ pub fn get_audio_info(path: &Path) -> Option<AudioInfo> {
     let tagged_file = read_from_path(path).ok()?;
 
     let properties = tagged_file.properties();
-    let duration = properties.duration().as_secs();
+    let duration = properties.duration();
 
     let mut info = AudioInfo {
-        // A zero duration means lofty could not determine it; surface that as
-        // an absent value rather than a misleading 0.
-        duration: (duration > 0).then_some(duration as usize),
+        // An exactly-zero duration means lofty could not determine it;
+        // surface that as an absent value rather than a misleading 0. A
+        // sub-second clip still reports 0 whole seconds.
+        duration: (!duration.is_zero()).then_some(duration.as_secs() as usize),
         bitrate: properties.audio_bitrate().or_else(|| properties.overall_bitrate()),
         sample_rate: properties.sample_rate(),
         ..Default::default()
@@ -88,7 +102,10 @@ pub fn get_audio_info(path: &Path) -> Option<AudioInfo> {
         info.album = tag.album().map(|c| c.to_string());
         info.genre = tag.genre().map(|c| c.to_string());
         info.comment = tag.comment().map(|c| c.to_string());
-        info.year = tag.year();
+        info.year = tag
+            .get_string(ItemKey::Year)
+            .or_else(|| tag.get_string(ItemKey::RecordingDate))
+            .and_then(parse_year);
         info.track = format_numbered(tag.track(), tag.track_total());
         info.disc = format_numbered(tag.disk(), tag.disk_total());
     }
@@ -115,6 +132,18 @@ mod tests {
         assert!(!is_audio_ext("m4v"));
         assert!(!is_audio_ext("mkv"));
         assert!(!is_audio_ext("txt"));
+    }
+
+    #[test]
+    fn test_parse_year() {
+        assert_eq!(parse_year("2023"), Some(2023));
+        assert_eq!(parse_year("2023-05-01"), Some(2023));
+        assert_eq!(parse_year(" 2023 "), Some(2023));
+        assert_eq!(parse_year("800"), Some(800));
+        assert_eq!(parse_year("20231"), None);
+        assert_eq!(parse_year("05/01/2023"), None);
+        assert_eq!(parse_year("unknown"), None);
+        assert_eq!(parse_year(""), None);
     }
 
     #[test]

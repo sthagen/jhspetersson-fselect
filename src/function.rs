@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use chrono::Datelike;
 use chrono::Local;
+use chrono::LocalResult;
 use chrono::DateTime;
 use chrono::NaiveDate;
 use chrono::NaiveDateTime;
@@ -171,6 +172,9 @@ fn file_contains<R: Read>(mut reader: R, needle: &[u8]) -> bool {
     let overlap = needle.len() - 1;
     let mut buf = vec![0u8; CHUNK + overlap];
     let mut carry = 0usize;
+    // SIMD-accelerated substring search; the naive windows() scan was 3-4x
+    // slower on cached files and O(n*m) on repetitive data.
+    let finder = memchr::memmem::Finder::new(needle);
 
     loop {
         let read = match reader.read(&mut buf[carry..]) {
@@ -179,7 +183,7 @@ fn file_contains<R: Read>(mut reader: R, needle: &[u8]) -> bool {
             Err(_) => return false,
         };
         let end = carry + read;
-        if memmem(&buf[..end], needle) {
+        if finder.find(&buf[..end]).is_some() {
             return true;
         }
         if end >= overlap {
@@ -189,13 +193,6 @@ fn file_contains<R: Read>(mut reader: R, needle: &[u8]) -> bool {
             carry = end;
         }
     }
-}
-
-fn memmem(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Parses `arg` as an `f64` and applies `f` to it. A value that does not parse
@@ -298,8 +295,8 @@ pub fn get_value(
                 },
             };
 
-            let len: Option<usize> = match &function_args.get(1) {
-                Some(len) => match len.parse::<usize>() {
+            let len: Option<i64> = match &function_args.get(1) {
+                Some(len) => match len.parse::<i64>() {
                     Ok(l) => Some(l),
                     Err(_) => return Err(format!("Could not parse length argument of SUBSTRING function: {}", len)),
                 },
@@ -307,7 +304,9 @@ pub fn get_value(
             };
 
             let result: String = match len {
-                Some(l) => string.chars().skip(pos as usize).take(l).collect(),
+                // MySQL returns an empty string for a non-positive length
+                Some(l) if l <= 0 => String::new(),
+                Some(l) => string.chars().skip(pos as usize).take(l as usize).collect(),
                 None => string.chars().skip(pos as usize).collect(),
             };
 
@@ -364,13 +363,13 @@ pub fn get_value(
 
             let result = val.powf(power);
             if result.is_nan() || result.is_infinite() {
-                return Err(format!("POWER({}, {}) produces a non-finite result", val, power));
+                return Ok(Variant::empty(VariantType::String));
             }
             Ok(Variant::from_float(result))
         }),
         Function::Sqrt => unary_float(&function_arg, |val| {
             if val < 0.0 {
-                Err(format!("SQRT of a negative number: {}", val))
+                Ok(Variant::empty(VariantType::String))
             } else {
                 Ok(Variant::from_float(val.sqrt()))
             }
@@ -385,17 +384,17 @@ pub fn get_value(
             };
 
             if val <= 0.0 {
-                return Err(format!("LOG of a non-positive number: {}", val));
+                return Ok(Variant::empty(VariantType::String));
             }
             if !base.is_finite() || base <= 0.0 || base == 1.0 {
-                return Err(format!("LOG with invalid base: {}", base));
+                return Ok(Variant::empty(VariantType::String));
             }
 
             Ok(Variant::from_float(val.log(base)))
         }),
         Function::Ln => unary_float(&function_arg, |val| {
             if val <= 0.0 {
-                Err(format!("LN of a non-positive number: {}", val))
+                Ok(Variant::empty(VariantType::String))
             } else {
                 Ok(Variant::from_float(val.ln()))
             }
@@ -403,7 +402,7 @@ pub fn get_value(
         Function::Exp => unary_float(&function_arg, |val| {
             let result = val.exp();
             if result.is_infinite() {
-                return Err(format!("EXP({}) overflows to infinity", val));
+                return Ok(Variant::empty(VariantType::String));
             }
             Ok(Variant::from_float(result))
         }),
@@ -611,7 +610,8 @@ pub fn get_value(
             let date2 = parse_datetime(&function_args[0]);
             match (date1, date2) {
                 (Ok(d1), Ok(d2)) => {
-                    let diff = d1.0.signed_duration_since(d2.0).num_days();
+                    // MySQL DATEDIFF ignores the time parts and diffs calendar dates
+                    let diff = d1.0.date().signed_duration_since(d2.0.date()).num_days();
                     Ok(Variant::from_int(diff))
                 }
                 _ => Ok(Variant::empty(VariantType::Int)),
@@ -623,7 +623,8 @@ pub fn get_value(
                 Err(_) => return Ok(Variant::empty(VariantType::String)),
             };
             match DateTime::from_timestamp(timestamp, 0) {
-                Some(dt) => Ok(Variant::from_string(&format_datetime(&dt.naive_utc()))),
+                // Render as local time: every other datetime in the tool is local-naive
+                Some(dt) => Ok(Variant::from_string(&format_datetime(&dt.with_timezone(&Local).naive_local()))),
                 None => Ok(Variant::empty(VariantType::String)),
             }
         }
@@ -667,7 +668,17 @@ pub fn get_value(
                 "dow" | "dayofweek" => Ok(Variant::from_int(dt.weekday().number_from_sunday() as i64)),
                 "isodow" => Ok(Variant::from_int(dt.weekday().number_from_monday() as i64)),
                 "doy" | "dayofyear" => Ok(Variant::from_int(dt.ordinal() as i64)),
-                "epoch" | "unixtime" => Ok(Variant::from_int(dt.and_utc().timestamp())),
+                "epoch" | "unixtime" => {
+                    // Naive datetimes in the tool are local time, so interpret them
+                    // as local when computing the Unix timestamp
+                    let timestamp = match dt.and_local_timezone(Local) {
+                        LocalResult::Single(local) => local.timestamp(),
+                        LocalResult::Ambiguous(earliest, _) => earliest.timestamp(),
+                        // DST gap: no local mapping exists, fall back to UTC
+                        LocalResult::None => dt.and_utc().timestamp(),
+                    };
+                    Ok(Variant::from_int(timestamp))
+                }
                 _ => Err(format!("Unsupported EXTRACT unit: {}", function_arg)),
             }
         }
@@ -1710,7 +1721,32 @@ mod tests {
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
         assert_eq!(result.unwrap().to_string(), "world");
     }
-    
+
+    #[test]
+    fn function_substring_negative_length() {
+        let function = Function::Substring;
+        let function_arg = String::from("hello world");
+        let function_args = vec![String::from("7"), String::from("-1")];
+        let entry = None;
+        let file_info = None;
+
+        // MySQL returns an empty string for a non-positive length, not an error
+        let result = get_value(&function, function_arg, function_args, entry, &file_info);
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
+    #[test]
+    fn function_substring_zero_length() {
+        let function = Function::Substring;
+        let function_arg = String::from("hello world");
+        let function_args = vec![String::from("7"), String::from("0")];
+        let entry = None;
+        let file_info = None;
+
+        let result = get_value(&function, function_arg, function_args, entry, &file_info);
+        assert_eq!(result.unwrap().to_string(), "");
+    }
+
     #[test]
     fn function_replace() {
         let function = Function::Replace;
@@ -2260,6 +2296,19 @@ mod tests {
     }
 
     #[test]
+    fn function_date_diff_ignores_time_parts() {
+        let function = Function::DateDiff;
+        let function_arg = String::from("2024-01-02");
+        let function_args = vec![String::from("2024-01-01 23:59:59")];
+        let entry = None;
+        let file_info = None;
+
+        // MySQL DATEDIFF diffs calendar dates, not full 24-hour periods
+        let result = get_value(&function, function_arg, function_args, entry, &file_info);
+        assert_eq!(result.unwrap().to_int(), 1);
+    }
+
+    #[test]
     fn function_date_diff_missing_arg() {
         let function = Function::DateDiff;
         let function_arg = String::from("2023-10-01");
@@ -2279,8 +2328,14 @@ mod tests {
         let entry = None;
         let file_info = None;
 
+        // Rendered as local time, whatever the machine timezone is
+        let expected = DateTime::from_timestamp(0, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .naive_local();
+
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_string(), "1970-01-01 00:00:00");
+        assert_eq!(result.unwrap().to_string(), format_datetime(&expected));
     }
 
     #[test]
@@ -2291,8 +2346,37 @@ mod tests {
         let entry = None;
         let file_info = None;
 
+        let expected = DateTime::from_timestamp(1696118400, 0)
+            .unwrap()
+            .with_timezone(&Local)
+            .naive_local();
+
         let result = get_value(&function, function_arg, function_args, entry, &file_info);
-        assert_eq!(result.unwrap().to_string(), "2023-10-01 00:00:00");
+        assert_eq!(result.unwrap().to_string(), format_datetime(&expected));
+    }
+
+    #[test]
+    fn function_from_unixtime_extract_epoch_roundtrip() {
+        // extract('epoch', from_unixtime(T)) must give T back regardless of timezone
+        let timestamp = 1696118400_i64; // 2023-10-01 00:00:00 UTC, no DST edge nearby
+        let formatted = get_value(
+            &Function::FromUnixtime,
+            timestamp.to_string(),
+            vec![],
+            None,
+            &None,
+        )
+        .unwrap()
+        .to_string();
+
+        let result = get_value(
+            &Function::Extract,
+            String::from("epoch"),
+            vec![formatted],
+            None,
+            &None,
+        );
+        assert_eq!(result.unwrap().to_int(), timestamp);
     }
 
     #[test]
@@ -2500,14 +2584,24 @@ mod tests {
 
     #[test]
     fn function_extract_epoch() {
+        // The naive datetime is interpreted as local time
+        let expected = NaiveDate::from_ymd_opt(2023, 10, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .single()
+            .unwrap()
+            .timestamp();
+
         let result = get_value(
             &Function::Extract,
             String::from("epoch"),
-            vec![String::from("1970-01-01 00:00:00")],
+            vec![String::from("2023-10-01 12:00:00")],
             None,
             &None,
         );
-        assert_eq!(result.unwrap().to_int(), 0);
+        assert_eq!(result.unwrap().to_int(), expected);
     }
 
     #[test]
@@ -3009,7 +3103,7 @@ mod tests {
     }
 
     #[test]
-    fn sqrt_negative_returns_error() {
+    fn sqrt_negative_returns_empty() {
         let result = get_value(
             &Function::Sqrt,
             String::from("-1"),
@@ -3017,11 +3111,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn ln_zero_returns_error() {
+    fn ln_zero_returns_empty() {
         let result = get_value(
             &Function::Ln,
             String::from("0"),
@@ -3029,11 +3123,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn ln_negative_returns_error() {
+    fn ln_negative_returns_empty() {
         let result = get_value(
             &Function::Ln,
             String::from("-1"),
@@ -3041,11 +3135,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn log_base_one_returns_error() {
+    fn log_base_one_returns_empty() {
         let result = get_value(
             &Function::Log,
             String::from("100"),
@@ -3053,11 +3147,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn log_nan_base_returns_error() {
+    fn log_nan_base_returns_empty() {
         let result = get_value(
             &Function::Log,
             String::from("100"),
@@ -3065,11 +3159,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn log_infinity_base_returns_error() {
+    fn log_infinity_base_returns_empty() {
         let result = get_value(
             &Function::Log,
             String::from("100"),
@@ -3077,11 +3171,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn log_negative_value_returns_error() {
+    fn log_negative_value_returns_empty() {
         let result = get_value(
             &Function::Log,
             String::from("-1"),
@@ -3089,11 +3183,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn power_negative_base_fractional_exp_returns_error() {
+    fn power_negative_base_fractional_exp_returns_empty() {
         let result = get_value(
             &Function::Power,
             String::from("-2"),
@@ -3101,11 +3195,11 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
-    fn power_zero_base_negative_exp_returns_error() {
+    fn power_zero_base_negative_exp_returns_empty() {
         let result = get_value(
             &Function::Power,
             String::from("0"),
@@ -3113,7 +3207,7 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]
@@ -3153,7 +3247,7 @@ mod tests {
     }
 
     #[test]
-    fn exp_overflow_returns_error() {
+    fn exp_overflow_returns_empty() {
         let result = get_value(
             &Function::Exp,
             String::from("710"),
@@ -3161,7 +3255,7 @@ mod tests {
             None,
             &None,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap().to_string(), "");
     }
 
     #[test]

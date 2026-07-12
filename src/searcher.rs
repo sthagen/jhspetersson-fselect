@@ -98,23 +98,48 @@ macro_rules! try_output {
 /// its expressions references a `root_alias` that is not declared on one of
 /// the subquery's own roots — that's the correlated-subquery case, where the
 /// result depends on outer-row state propagated via `record_context`.
+/// Applies a leading unary minus to an evaluated expression value, with
+/// MySQL-style numeric coercion (0 - x). Empty values stay empty, like
+/// negating SQL NULL. Literal values are excluded: they carry their sign in
+/// the string itself (`Variant::from_signed_string`).
+fn apply_minus(column_expr: &Expr, value: Variant) -> Variant {
+    if !column_expr.minus || value.to_string().is_empty() {
+        return value;
+    }
+    crate::operators::ArithmeticOp::Subtract
+        .calc(&Variant::from_int(0), &value)
+        .unwrap_or(value)
+}
+
 fn is_subquery_cacheable(query: &Query) -> bool {
     let own_aliases: HashSet<String> = query
         .roots
         .iter()
         .filter_map(|r| r.options.alias.clone())
         .collect();
-    !expr_references_external_alias(&query.expr, &own_aliases)
-        && query.fields.iter().all(|e| !expr_walk_external_alias(e, &own_aliases))
-        && query.ordering_fields.iter().all(|e| !expr_walk_external_alias(e, &own_aliases))
-        && query.grouping_fields.iter().all(|e| !expr_walk_external_alias(e, &own_aliases))
+    !query_walk_external_alias(query, &own_aliases)
 }
 
-fn expr_references_external_alias(expr: &Option<Expr>, own: &HashSet<String>) -> bool {
-    match expr {
-        Some(e) => expr_walk_external_alias(e, own),
-        None => false,
-    }
+/// Walk every clause of a query — WHERE, SELECT list, ORDER BY, GROUP BY, and
+/// FROM-subselects — looking for a root_alias not declared by the query (or an
+/// enclosing level). Any hit means the query depends on outer-row state.
+fn query_walk_external_alias(query: &Query, own: &HashSet<String>) -> bool {
+    if let Some(ref expr) = query.expr
+        && expr_walk_external_alias(expr, own) { return true; }
+    if query.fields.iter().any(|e| expr_walk_external_alias(e, own)) { return true; }
+    if query.ordering_fields.iter().any(|e| expr_walk_external_alias(e, own)) { return true; }
+    if query.grouping_fields.iter().any(|e| expr_walk_external_alias(e, own)) { return true; }
+    query.roots.iter().any(|root| {
+        root.subquery.as_ref().is_some_and(|sub| {
+            let nested_own: HashSet<String> = sub
+                .roots
+                .iter()
+                .filter_map(|r| r.options.alias.clone())
+                .chain(own.iter().cloned())
+                .collect();
+            query_walk_external_alias(sub, &nested_own)
+        })
+    })
 }
 
 fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
@@ -128,8 +153,8 @@ fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
         && expr_walk_external_alias(right, own) { return true; }
     if let Some(ref args) = expr.args
         && args.iter().any(|a| expr_walk_external_alias(a, own)) { return true; }
-    // Nested subqueries: descend so a doubly-nested correlated reference is
-    // also detected.
+    // Nested subqueries: descend through every clause so a doubly-nested
+    // correlated reference (including one via a FROM-subselect) is detected.
     if let Some(ref sub) = expr.subquery {
         let nested_own: HashSet<String> = sub
             .roots
@@ -137,8 +162,9 @@ fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
             .filter_map(|r| r.options.alias.clone())
             .chain(own.iter().cloned())
             .collect();
-        if let Some(ref sub_expr) = sub.expr
-            && expr_walk_external_alias(sub_expr, &nested_own) { return true; }
+        if query_walk_external_alias(sub, &nested_own) {
+            return true;
+        }
     }
     false
 }
@@ -147,7 +173,11 @@ fn expr_walk_external_alias(expr: &Expr, own: &HashSet<String>) -> bool {
 fn external_index_depth(path: &Path, root_prefix: &str) -> Option<u32> {
     let s = path.to_string_lossy();
     let under = if cfg!(windows) {
-        s.len() >= root_prefix.len() && s[..root_prefix.len()].eq_ignore_ascii_case(root_prefix)
+        // Compare bytes: a string slice could panic if the paths diverge in
+        // the middle of a multibyte character. A byte-wise ASCII-case match
+        // also guarantees the prefix ends on a char boundary in `s`.
+        s.len() >= root_prefix.len()
+            && s.as_bytes()[..root_prefix.len()].eq_ignore_ascii_case(root_prefix.as_bytes())
     } else {
         s.starts_with(root_prefix)
     };
@@ -439,6 +469,9 @@ impl<'a> Searcher<'a> {
                 search_upstream_dockerignore(&mut self.dockerignore_filters, &self.current_root_dir);
             }
 
+            // The external indexes only know physical descendants of the root,
+            // so a root declared with `sym` (follow symlinks) must fall back
+            // to real traversal or symlinked subtrees would be silently missed.
             #[cfg(all(windows, feature = "everything"))]
             {
                 if self.config.everything.unwrap_or(false)
@@ -446,6 +479,7 @@ impl<'a> Searcher<'a> {
                     && !self.current_apply_gitignore
                     && !self.current_apply_hgignore
                     && !self.current_apply_dockerignore
+                    && !self.current_follow_symlinks
                     && self.try_visit_with_everything(&self.current_root_dir.clone())?
                 {
                     continue;
@@ -459,6 +493,7 @@ impl<'a> Searcher<'a> {
                     && !self.current_apply_gitignore
                     && !self.current_apply_hgignore
                     && !self.current_apply_dockerignore
+                    && !self.current_follow_symlinks
                     && self.try_visit_with_plocate(&self.current_root_dir.clone())?
                 {
                     continue;
@@ -623,7 +658,9 @@ impl<'a> Searcher<'a> {
                     rendered.clone(),
                 );
 
-                if !self.silent_mode {
+                // An ungrouped aggregate produces a single row; any OFFSET
+                // skips past it (the buffered row is offset-skipped by readers).
+                if !self.silent_mode && self.query.offset == 0 {
                     try_output!(write!(std::io::stdout(), "{}", rendered), Ok(()));
                 }
             }
@@ -733,14 +770,21 @@ impl<'a> Searcher<'a> {
             self.default_config,
             self.use_colors
         );
-        sub_searcher.silent_mode = !self.config.debug;
+        // Always run silent: is_buffered() must hold so results land in
+        // output_buffer instead of leaking to stdout (debug mode included).
+        sub_searcher.silent_mode = true;
         if let Err(err) = sub_searcher.list_search_results() {
             err.print();
             return vec![];
         }
 
+        // The buffer holds limit + offset rows; the offset rows are skipped
+        // only in the print path, so they must be skipped here as well.
+        // Strip only the row terminator: file names may legally end in spaces
+        // or tabs, and a mangled name would silently drop the row later.
         let result_values = sub_searcher.output_buffer.iter_values()
-            .map(|s| s.trim_end().to_string())
+            .skip(query.offset as usize)
+            .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
             .collect::<Vec<String>>();
 
         if ok_to_cache {
@@ -1182,7 +1226,10 @@ impl<'a> Searcher<'a> {
 
         let mut should_update_context = false;
 
-        if let Some(captures) = FIELD_WITH_ALIAS.captures(&column_expr_str) {
+        // Cheap guard: the alias regex requires a dot, and most column
+        // expressions have none, so skip the regex in the per-file hot path.
+        if column_expr_str.contains('.')
+            && let Some(captures) = FIELD_WITH_ALIAS.captures(&column_expr_str) {
             let column_expr_context_name = captures.get(1).unwrap().as_str();
             if self.current_alias.as_deref() == Some(column_expr_context_name) {
                 should_update_context = true;
@@ -1228,29 +1275,33 @@ impl<'a> Searcher<'a> {
             let list = self.get_list_from_subquery(*subquery);
             if !list.is_empty() {
                 let result = list.first().unwrap().to_string();
-                return Ok(Variant::from_string(&result));
+                return Ok(apply_minus(column_expr, Variant::from_string(&result)));
             }
         }
 
         if let Some(ref _function) = column_expr.function {
             let result =
                 self.get_function_value(entry, file_info, root_path, file_map, accumulator, column_expr)?;
+            let result = apply_minus(column_expr, result);
             file_map.insert(column_expr_str, result.to_string());
             return Ok(result);
         }
 
         if let Some(ref field) = column_expr.field {
             if let Some(entry) = entry {
-                let result = self.get_field_value(entry, file_info, root_path, field).unwrap_or(Variant::empty(VariantType::String));
+                let raw = self.get_field_value(entry, file_info, root_path, field).unwrap_or(Variant::empty(VariantType::String));
+                // The record context feeds correlated subqueries and must hold
+                // the raw field value; only the returned value is negated.
+                let result = apply_minus(column_expr, raw.clone());
                 file_map.insert(column_expr_str, result.to_string());
                 let mut context = self.record_context.borrow_mut();
                 let context_key = self.current_alias.clone().unwrap_or_else(|| String::from(""));
                 let context_entry = context.entry(context_key).or_default();
                 let entry_key = if let Some(alias) = column_expr.alias.clone() { alias } else { field.to_string() };
-                context_entry.insert(entry_key, result.to_string());
+                context_entry.insert(entry_key, raw.to_string());
                 return Ok(result);
             } else if let Some(val) = file_map.get(&field.to_string()) {
-                return Ok(Variant::from_string(val));
+                return Ok(apply_minus(column_expr, Variant::from_string(val)));
             } else {
                 return Ok(Variant::empty(VariantType::String));
             }
@@ -1270,13 +1321,13 @@ impl<'a> Searcher<'a> {
                 if let Some(ref right) = column_expr.right {
                     let right_result =
                         self.get_column_expr_value(entry, file_info, root_path, file_map, accumulator, right)?;
-                        result = op.calc(&left_result, &right_result);
+                        result = op.calc(&left_result, &right_result).map(|v| apply_minus(column_expr, v));
                         file_map.insert(column_expr_str, result.clone()?.to_string());
                 } else {
-                    result = Ok(left_result);
+                    result = Ok(apply_minus(column_expr, left_result));
                 }
             } else {
-                result = Ok(left_result);
+                result = Ok(apply_minus(column_expr, left_result));
             }
         } else {
             result = Ok(Variant::empty(VariantType::Int));
@@ -2788,10 +2839,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unary_minus_negates_parens_fields_and_functions() {
+        let tmp = std::env::temp_dir().join("fselect_test_unary_minus");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("x.txt"), "12345").unwrap();
+
+        let rows = run_query_against_dir(
+            "select -(1+2), -abs(3), size, -size, -(-1) from __DIR__ where name = 'x.txt'",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(rows, vec![String::from("-3\t-3\t5\t-5\t1")]);
+    }
+
+    #[test]
+    fn subquery_with_correlated_from_subselect_is_not_cacheable() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+
+        // The outer-alias reference hides inside the FROM-subselect: memoising
+        // this query would reuse the first outer row's result for every row.
+        let query = "select name from (select path from /test where size gt t1.size)";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut parser = Parser::new(&mut lexer);
+        let parsed = parser.parse(false).expect("parse failed");
+
+        assert!(
+            !is_subquery_cacheable(&parsed),
+            "query with a correlated FROM-subselect must not be cached"
+        );
+    }
+
     /// Build a real Query via the parser+lexer and execute it silently against
     /// a temp directory. Returns the rendered rows the outer query produced so
     /// we can assert against them as a flat set of strings.
     fn run_query_against_dir(query_template: &str, dir: &Path) -> Vec<String> {
+        run_query_against_dir_with_config(query_template, dir, Config::default())
+    }
+
+    fn run_query_against_dir_with_config(
+        query_template: &str,
+        dir: &Path,
+        config: Config,
+    ) -> Vec<String> {
         use crate::lexer::Lexer;
         use crate::parser::Parser;
 
@@ -2800,7 +2893,7 @@ mod tests {
         let mut parser = Parser::new(&mut lexer);
         let parsed = parser.parse(false).expect("parse failed");
         let parsed = Box::leak(Box::new(parsed));
-        let config = Box::leak(Box::new(Config::default()));
+        let config = Box::leak(Box::new(config));
         let default_config = Box::leak(Box::new(Config::default()));
 
         let mut searcher = Searcher::new(parsed, config, default_config, false);
@@ -2833,6 +2926,53 @@ mod tests {
         let names: HashSet<String> = rows.into_iter().collect();
         assert!(names.contains("one.txt"), "names was {:?}", names);
         assert!(names.contains("two.txt"));
+    }
+
+    #[test]
+    fn subquery_in_list_applies_offset() {
+        // The subquery buffer holds limit + offset rows; the offset rows must
+        // be skipped when handing values to the outer query, or `limit 1
+        // offset 1` would feed two values into the IN list.
+        let tmp = std::env::temp_dir().join("fselect_test_subquery_offset");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("small.txt"), "1").unwrap();
+        fs::write(tmp.join("medium.txt"), "22").unwrap();
+        fs::write(tmp.join("large.txt"), "333").unwrap();
+
+        let rows = run_query_against_dir(
+            "select name from __DIR__ depth 1 where name in (select name from __DIR__ depth 1 order by size desc limit 1 offset 1)",
+            &tmp,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+        assert_eq!(rows, vec![String::from("medium.txt")]);
+    }
+
+    #[test]
+    fn subquery_results_are_buffered_with_debug_config() {
+        // Subqueries must run silent regardless of config.debug: with debug on
+        // they used to print their rows instead of buffering them, so EXISTS
+        // inverted and IN/scalar subqueries came back empty.
+        let tmp = std::env::temp_dir().join("fselect_test_subquery_debug_config");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("one.txt"), "x").unwrap();
+        fs::write(tmp.join("two.txt"), "y").unwrap();
+
+        let mut config = Config::default();
+        config.debug = true;
+
+        let rows = run_query_against_dir_with_config(
+            "select name from __DIR__ depth 1 where exists (select name from __DIR__ depth 1 where name eq 'one.txt')",
+            &tmp,
+            config,
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+        let names: HashSet<String> = rows.into_iter().collect();
+        assert!(names.contains("one.txt"), "names was {:?}", names);
+        assert!(names.contains("two.txt"), "names was {:?}", names);
     }
 
     #[test]

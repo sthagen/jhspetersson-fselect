@@ -41,7 +41,7 @@ pub enum Op {
 }
 
 impl Op {
-    pub fn from(text: String) -> Option<Op> {
+    pub fn from(text: &str) -> Option<Op> {
         match text.to_lowercase().as_str() {
             "=" | "==" | "eq" => Some(Op::Eq),
             "!=" | "<>" | "ne" => Some(Op::Ne),
@@ -63,7 +63,7 @@ impl Op {
         }
     }
 
-    pub fn from_with_not(text: String, not: bool) -> Option<Op> {
+    pub fn from_with_not(text: &str, not: bool) -> Option<Op> {
         let op = Op::from(text);
         match op {
             Some(op) if not => Some(Self::negate(op)),
@@ -103,7 +103,7 @@ pub enum ArithmeticOp {
 }
 
 impl ArithmeticOp {
-    pub fn from(text: String) -> Option<ArithmeticOp> {
+    pub fn from(text: &str) -> Option<ArithmeticOp> {
         match text.to_lowercase().as_str() {
             "+" | "plus" => Some(ArithmeticOp::Add),
             "-" | "minus" => Some(ArithmeticOp::Subtract),
@@ -145,18 +145,18 @@ mod tests {
     fn op_from_between_is_none() {
         // BETWEEN is rewritten by the parser into >=/<= comparisons and has
         // no Op variant of its own.
-        assert_eq!(Op::from("between".to_string()), None);
-        assert_eq!(Op::from("notbetween".to_string()), None);
+        assert_eq!(Op::from("between"), None);
+        assert_eq!(Op::from("notbetween"), None);
     }
 
     #[test]
     fn op_from_notin() {
-        assert_eq!(Op::from("notin".to_string()), Some(Op::NotIn));
+        assert_eq!(Op::from("notin"), Some(Op::NotIn));
     }
 
     #[test]
     fn op_from_notexists() {
-        assert_eq!(Op::from("notexists".to_string()), Some(Op::NotExists));
+        assert_eq!(Op::from("notexists"), Some(Op::NotExists));
     }
 
     #[test]
@@ -188,12 +188,12 @@ mod tests {
 
     #[test]
     fn op_from_notlike_exists() {
-        assert_eq!(Op::from("notlike".to_string()), Some(Op::NotLike));
+        assert_eq!(Op::from("notlike"), Some(Op::NotLike));
     }
 
     #[test]
     fn op_from_notrx_exists() {
-        assert_eq!(Op::from("notrx".to_string()), Some(Op::NotRx));
+        assert_eq!(Op::from("notrx"), Some(Op::NotRx));
     }
 
     #[test]
@@ -210,33 +210,33 @@ mod tests {
 
     #[test]
     fn op_from_with_not_negates() {
-        assert_eq!(Op::from_with_not("eq".to_string(), true), Some(Op::Ne));
-        assert_eq!(Op::from_with_not("eq".to_string(), false), Some(Op::Eq));
+        assert_eq!(Op::from_with_not("eq", true), Some(Op::Ne));
+        assert_eq!(Op::from_with_not("eq", false), Some(Op::Eq));
     }
 
     #[test]
     fn op_from_with_not_unknown_returns_none() {
-        assert_eq!(Op::from_with_not("garbage".to_string(), true), None);
-        assert_eq!(Op::from_with_not("garbage".to_string(), false), None);
+        assert_eq!(Op::from_with_not("garbage", true), None);
+        assert_eq!(Op::from_with_not("garbage", false), None);
     }
 
     #[test]
     fn arithmetic_op_from_all_variants() {
-        assert_eq!(ArithmeticOp::from("+".to_string()), Some(ArithmeticOp::Add));
-        assert_eq!(ArithmeticOp::from("plus".to_string()), Some(ArithmeticOp::Add));
-        assert_eq!(ArithmeticOp::from("-".to_string()), Some(ArithmeticOp::Subtract));
-        assert_eq!(ArithmeticOp::from("minus".to_string()), Some(ArithmeticOp::Subtract));
-        assert_eq!(ArithmeticOp::from("*".to_string()), Some(ArithmeticOp::Multiply));
-        assert_eq!(ArithmeticOp::from("mul".to_string()), Some(ArithmeticOp::Multiply));
-        assert_eq!(ArithmeticOp::from("/".to_string()), Some(ArithmeticOp::Divide));
-        assert_eq!(ArithmeticOp::from("div".to_string()), Some(ArithmeticOp::Divide));
-        assert_eq!(ArithmeticOp::from("%".to_string()), Some(ArithmeticOp::Modulo));
-        assert_eq!(ArithmeticOp::from("mod".to_string()), Some(ArithmeticOp::Modulo));
+        assert_eq!(ArithmeticOp::from("+"), Some(ArithmeticOp::Add));
+        assert_eq!(ArithmeticOp::from("plus"), Some(ArithmeticOp::Add));
+        assert_eq!(ArithmeticOp::from("-"), Some(ArithmeticOp::Subtract));
+        assert_eq!(ArithmeticOp::from("minus"), Some(ArithmeticOp::Subtract));
+        assert_eq!(ArithmeticOp::from("*"), Some(ArithmeticOp::Multiply));
+        assert_eq!(ArithmeticOp::from("mul"), Some(ArithmeticOp::Multiply));
+        assert_eq!(ArithmeticOp::from("/"), Some(ArithmeticOp::Divide));
+        assert_eq!(ArithmeticOp::from("div"), Some(ArithmeticOp::Divide));
+        assert_eq!(ArithmeticOp::from("%"), Some(ArithmeticOp::Modulo));
+        assert_eq!(ArithmeticOp::from("mod"), Some(ArithmeticOp::Modulo));
     }
 
     #[test]
     fn arithmetic_op_from_unknown() {
-        assert_eq!(ArithmeticOp::from("garbage".to_string()), None);
+        assert_eq!(ArithmeticOp::from("garbage"), None);
     }
 
     #[test]

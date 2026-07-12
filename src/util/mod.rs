@@ -39,7 +39,7 @@ use std::fs::DirEntry;
 use std::fs::File;
 use std::fs::Metadata;
 use std::io::Read;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -287,6 +287,69 @@ pub fn parse_filesize(s: &str) -> Option<u64> {
     if length > 3 && string.ends_with("gib") {
         return match &string[..(length - 3)].parse::<f64>() {
             Ok(size) => Some((*size * 1024.0 * 1024.0 * 1024.0) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 1 && string.ends_with("t") {
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(4)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 2 && string.ends_with("tb") {
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0_f64.powi(4)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 3 && string.ends_with("tib") {
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(4)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 1 && string.ends_with("p") {
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(5)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 2 && string.ends_with("pb") {
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0_f64.powi(5)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 3 && string.ends_with("pib") {
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(5)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 1 && string.ends_with("e") {
+        return match &string[..(length - 1)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(6)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 2 && string.ends_with("eb") {
+        return match &string[..(length - 2)].parse::<f64>() {
+            Ok(size) => Some((*size * 1000.0_f64.powi(6)) as u64),
+            _ => None,
+        };
+    }
+
+    if length > 3 && string.ends_with("eib") {
+        return match &string[..(length - 3)].parse::<f64>() {
+            Ok(size) => Some((*size * 1024.0_f64.powi(6)) as u64),
             _ => None,
         };
     }
@@ -539,8 +602,14 @@ pub fn canonical_path(path_buf: &PathBuf) -> Result<String, String> {
 pub fn format_absolute_path(path_buf: &Path) -> String {
     let path = format!("{}", path_buf.to_string_lossy());
 
+    // canonicalize returns verbatim paths: `\\?\C:\...` for drives but
+    // `\\?\UNC\server\share\...` for network paths, which must map back to
+    // `\\server\share\...`, not to the invalid `UNC\server\share\...`.
     #[cfg(windows)]
-    let path = path.replace("\\\\?\\", "");
+    let path = match path.strip_prefix("\\\\?\\UNC\\") {
+        Some(rest) => format!("\\\\{}", rest),
+        None => path.replace("\\\\?\\", ""),
+    };
 
     path
 }
@@ -604,13 +673,13 @@ pub fn get_exif_metadata(entry: &DirEntry) -> Option<HashMap<String, String>> {
                     exif_info.insert(String::from("__Lat"), coord.to_string());
                 }
 
+            // Unparseable altitude data is omitted rather than masked as a
+            // valid-looking 0.0.
             if let (Some(altitude_str), Some(altitude_ref)) =
                 (exif_info.get("GPSAltitude").cloned(), exif_info.get("GPSAltitudeRef").cloned())
+                && let Ok(altitude) = altitude_str.parse::<f32>()
             {
-                let mut altitude = altitude_str.parse::<f32>().unwrap_or(0.0);
-                if altitude_ref.eq("1") {
-                    altitude = -altitude;
-                }
+                let altitude = if altitude_ref.eq("1") { -altitude } else { altitude };
                 exif_info.insert(String::from("__Alt"), altitude.to_string());
             }
 
@@ -677,39 +746,12 @@ pub fn is_hidden(file_name: &str, metadata: &Option<Metadata>, archive_mode: boo
     }
 }
 
-pub fn get_line_count(entry: &DirEntry) -> Option<usize> {
-    if let Ok(file) = File::open(entry.path()) {
-        let mut reader = BufReader::with_capacity(1024 * 32, file);
-        let mut count = 0;
-
-        loop {
-            let len = {
-                if let Ok(buf) = reader.fill_buf() {
-                    if buf.is_empty() {
-                        break;
-                    }
-
-                    count += bytecount::count(buf, b'\n');
-                    buf.len()
-                } else {
-                    return None;
-                }
-            };
-
-            reader.consume(len);
-        }
-
-        return Some(count);
-    }
-
-    None
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentStats {
     pub is_text: bool,
     pub char_count: usize,
     pub word_count: usize,
+    pub line_count: usize,
     pub encoding: String,
     pub has_bom: bool,
     pub line_ending: String,
@@ -828,6 +870,12 @@ fn compute_content_stats(bytes: &[u8]) -> ContentStats {
     ContentStats {
         char_count: text.chars().count(),
         word_count: text.split_whitespace().count(),
+        // For binary files the decoded text is empty; count newline bytes in
+        // the body instead, matching the standalone line-count byte scan.
+        line_count: match is_text {
+            true => text.chars().filter(|&c| c == '\n').count(),
+            false => bytecount::count(body, b'\n'),
+        },
         line_ending: detect_line_ending(&text),
         is_text,
         has_bom,
@@ -853,6 +901,7 @@ const CONTENT_CHUNK: usize = 32 * 1024;
 struct ContentScan {
     char_count: usize,
     word_count: usize,
+    newline_count: usize,
     in_word: bool,
     crlf: bool,
     lf: bool,
@@ -863,6 +912,10 @@ struct ContentScan {
 impl ContentScan {
     fn push(&mut self, c: char) {
         self.char_count += 1;
+
+        if c == '\n' {
+            self.newline_count += 1;
+        }
 
         if c.is_whitespace() {
             self.in_word = false;
@@ -1116,6 +1169,9 @@ impl ContentSink for NoBomSink {
                 is_text: false,
                 char_count: 0,
                 word_count: 0,
+                // Binary files still report their newline byte count, matching
+                // the standalone line-count byte scan.
+                line_count: self.latin1.newline_count,
                 encoding: String::new(),
                 has_bom: false,
                 line_ending: String::new(),
@@ -1125,6 +1181,7 @@ impl ContentSink for NoBomSink {
                 is_text: true,
                 char_count: self.utf8.char_count,
                 word_count: self.utf8.word_count,
+                line_count: self.utf8.newline_count,
                 encoding: String::from("ASCII"),
                 has_bom: false,
                 line_ending: self.utf8.line_ending(),
@@ -1134,6 +1191,7 @@ impl ContentSink for NoBomSink {
                 is_text: true,
                 char_count: self.utf8.char_count,
                 word_count: self.utf8.word_count,
+                line_count: self.utf8.newline_count,
                 encoding: String::from("UTF-8"),
                 has_bom: false,
                 line_ending: self.utf8.line_ending(),
@@ -1144,6 +1202,7 @@ impl ContentSink for NoBomSink {
                 is_text: true,
                 char_count: self.byte_count,
                 word_count: self.latin1.word_count,
+                line_count: self.latin1.newline_count,
                 encoding: String::from("ISO-8859-1"),
                 has_bom: false,
                 line_ending: self.latin1.line_ending(),
@@ -1185,6 +1244,7 @@ impl ContentSink for Utf8BomSink {
             is_text: true,
             char_count: self.scan.char_count,
             word_count: self.scan.word_count,
+            line_count: self.scan.newline_count,
             encoding: String::from("UTF-8"),
             has_bom: true,
             line_ending: self.scan.line_ending(),
@@ -1273,6 +1333,7 @@ impl ContentSink for Utf16Sink {
             is_text: true,
             char_count: self.scan.char_count,
             word_count: self.scan.word_count,
+            line_count: self.scan.newline_count,
             encoding: String::from(if self.big_endian { "UTF-16BE" } else { "UTF-16LE" }),
             has_bom: true,
             line_ending: self.scan.line_ending(),
@@ -1337,6 +1398,7 @@ impl ContentSink for Utf32Sink {
             is_text: true,
             char_count: self.scan.char_count,
             word_count: self.scan.word_count,
+            line_count: self.scan.newline_count,
             encoding: String::from(if self.big_endian { "UTF-32BE" } else { "UTF-32LE" }),
             has_bom: true,
             line_ending: self.scan.line_ending(),
@@ -1767,6 +1829,30 @@ mod tests {
 
         let file_size = "1 kib";
         assert_eq!(parse_filesize(file_size), Some(1024));
+
+        let file_size = "1tb";
+        assert_eq!(parse_filesize(file_size), Some(1_000_000_000_000));
+
+        let file_size = "1tib";
+        assert_eq!(parse_filesize(file_size), Some(1u64 << 40));
+
+        let file_size = "2t";
+        assert_eq!(parse_filesize(file_size), Some(2u64 << 40));
+
+        let file_size = "1pb";
+        assert_eq!(parse_filesize(file_size), Some(1_000_000_000_000_000));
+
+        let file_size = "1pib";
+        assert_eq!(parse_filesize(file_size), Some(1u64 << 50));
+
+        let file_size = "1eb";
+        assert_eq!(parse_filesize(file_size), Some(1_000_000_000_000_000_000));
+
+        let file_size = "1eib";
+        assert_eq!(parse_filesize(file_size), Some(1u64 << 60));
+
+        let file_size = "tib";
+        assert_eq!(parse_filesize(file_size), None);
     }
 
     #[test]

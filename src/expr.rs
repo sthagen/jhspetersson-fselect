@@ -563,6 +563,14 @@ impl Display for Expr {
             fmt.write_char('-')?;
         }
 
+        // A negated composite must keep its grouping: -(1 Add 2) and
+        // (-1) Add 2 would otherwise render identically and share a cache key.
+        let negated_composite = self.minus
+            && (self.arithmetic_op.is_some() || self.logical_op.is_some() || self.op.is_some());
+        if negated_composite {
+            fmt.write_char('(')?;
+        }
+
         if let Some(ref function) = self.function {
             if let Some(ref alias) = self.alias {
                 fmt.write_str(alias)?;
@@ -583,7 +591,7 @@ impl Display for Expr {
                 fmt.write_char(')')?;
             }
         } else if let Some(ref left) = self.left {
-            fmt.write_str(&left.to_string())?;
+            write_operand(fmt, left)?;
         }
 
         if let Some(ref op) = self.arithmetic_op {
@@ -615,11 +623,37 @@ impl Display for Expr {
         }
 
         if let Some(ref right) = self.right {
-            fmt.write_str(&right.to_string())?;
+            write_operand(fmt, right)?;
+        }
+
+        if negated_composite {
+            fmt.write_char(')')?;
         }
 
         Ok(())
     }
+}
+
+/// Write a child operand, parenthesized when it is itself a composite
+/// expression. Without this, `(1 + 2) * 3` and `1 + (2 * 3)` render to the
+/// same string, and the rendered form is used as the per-file evaluation
+/// cache key — colliding columns would silently reuse each other's values.
+fn write_operand(fmt: &mut Formatter, operand: &Expr) -> fmt::Result {
+    use std::fmt::Write;
+
+    let composite = operand.arithmetic_op.is_some()
+        || operand.logical_op.is_some()
+        || operand.op.is_some();
+
+    if composite {
+        fmt.write_char('(')?;
+    }
+    Display::fmt(operand, fmt)?;
+    if composite {
+        fmt.write_char(')')?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -629,6 +663,31 @@ mod tests {
     use crate::function::Function;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+
+    #[test]
+    fn display_distinguishes_operand_grouping() {
+        // The rendered form is the per-file evaluation cache key: without
+        // parentheses, (1+2)*3 and 1+(2*3) collide and reuse each other's
+        // cached values.
+        let query = "select (1+2)*3, 1+(2*3) from /test";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut parser = Parser::new(&mut lexer);
+        let query = parser.parse(false).unwrap();
+
+        assert_ne!(query.fields[0].to_string(), query.fields[1].to_string());
+    }
+
+    #[test]
+    fn display_distinguishes_negated_composite() {
+        // -(1+2) is -3 while -1+2 is 1; without parentheses around the negated
+        // composite both would render identically and share a cache key.
+        let query = "select -(1+2), -1+2 from /test";
+        let mut lexer = Lexer::new(vec![query.to_string()]);
+        let mut parser = Parser::new(&mut lexer);
+        let query = parser.parse(false).unwrap();
+
+        assert_ne!(query.fields[0].to_string(), query.fields[1].to_string());
+    }
 
     #[test]
     fn test_weight() {

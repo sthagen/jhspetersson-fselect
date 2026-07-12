@@ -49,7 +49,6 @@ enum LexingMode {
 
 #[derive(Clone)]
 struct LexerState {
-    first_lexeme: bool,
     before_from: bool,
     possible_search_root: bool,
     after_open: bool,
@@ -63,12 +62,12 @@ struct LexerState {
     in_order_by: bool,
     in_value_set: bool,
     roots_finished: bool,
+    paren_depth: u32,
 }
 
 impl LexerState {
     fn new() -> Self {
         LexerState {
-            first_lexeme: true,
             before_from: true,
             possible_search_root: false,
             after_open: false,
@@ -82,6 +81,7 @@ impl LexerState {
             in_order_by: false,
             in_value_set: false,
             roots_finished: false,
+            paren_depth: 0,
         }
     }
 
@@ -152,8 +152,12 @@ impl Lexer {
             if self.between_parts {
                 match mode {
                     LexingMode::QuotedString(_) => {
+                        // The shell swallowed the whitespace that separated
+                        // these args; inside a quoted string that space is
+                        // part of the literal, so put it back.
                         self.between_parts = false;
                         self.char_index = 0;
+                        s.push(' ');
                         continue;
                     }
                     LexingMode::RawString if s.ends_with('-') && looks_like_date(&s[..s.len() - 1]) => {
@@ -330,7 +334,6 @@ impl Lexer {
             _ => None,
         };
 
-        self.state.first_lexeme = false;
         self.state.roots_finished = self.state.roots_finished
                 || matches!(lexeme, Some(Lexeme::Where) | Some(Lexeme::Group) | Some(Lexeme::Order) | Some(Lexeme::Limit) | Some(Lexeme::Offset) | Some(Lexeme::Into));
         self.state.possible_search_root = matches!(lexeme, Some(Lexeme::From))
@@ -338,9 +341,17 @@ impl Lexer {
         self.state.in_value_set = matches!(lexeme, Some(Lexeme::CurlyOpen))
                 || (matches!(lexeme, Some(Lexeme::Open)) && self.state.after_operator);
         self.state.after_operator = matches!(lexeme, Some(Lexeme::Operator(_)));
+        // A comma in the SELECT list suppresses keywords only inside parens
+        // (function args like `upper(foo, from)`); at depth 0 the next `from`
+        // must still be the FROM keyword, or a trailing comma would swallow it.
         self.state.after_logical = matches!(lexeme, Some(Lexeme::Where) | Some(Lexeme::And) | Some(Lexeme::Or) | Some(Lexeme::Open) | Some(Lexeme::CurlyOpen))
                 || (matches!(lexeme, Some(Lexeme::Comma)) && self.state.after_where)
-                || (matches!(lexeme, Some(Lexeme::Comma)) && self.state.before_from);
+                || (matches!(lexeme, Some(Lexeme::Comma)) && self.state.before_from && self.state.paren_depth > 0);
+        self.state.paren_depth = match lexeme {
+            Some(Lexeme::Open) | Some(Lexeme::CurlyOpen) => self.state.paren_depth + 1,
+            Some(Lexeme::Close) | Some(Lexeme::CurlyClose) => self.state.paren_depth.saturating_sub(1),
+            _ => self.state.paren_depth,
+        };
         self.state.after_value_start = matches!(lexeme, Some(Lexeme::Comma)) && self.state.after_where;
         self.state.after_not = matches!(lexeme, Some(Lexeme::Not));
         self.state.after_arithmetic = matches!(lexeme, Some(Lexeme::ArithmeticOperator(_)));
@@ -425,6 +436,23 @@ mod tests {
                 Lexer::new(quote)
             }
         }
+    }
+
+    #[test]
+    fn quoted_string_spanning_input_parts_keeps_separating_space() {
+        // The shell strips the space between args; a quoted string that spans
+        // two parts must get it back: `... where name = 'foo bar.txt'` typed
+        // unquoted at a shell arrives with every word as its own arg.
+        let mut lexer = lexer!("select", "name", "from", "/test", "where", "name", "=", "'foo", "bar.txt'");
+        let mut lexemes = vec![];
+        while let Some(lexeme) = lexer.next_lexeme() {
+            lexemes.push(lexeme);
+        }
+        assert!(
+            lexemes.contains(&Lexeme::String(String::from("foo bar.txt"))),
+            "lexemes were {:?}",
+            lexemes
+        );
     }
 
     #[test]
@@ -1793,8 +1821,9 @@ mod tests {
         let mut lexer = lexer!("'foo", "bar'");
         assert_eq!(
             lexer.next_lexeme(),
-            Some(Lexeme::String(String::from("foobar"))),
-            "Quoted string spanning input parts should not have a space injected at the boundary"
+            Some(Lexeme::String(String::from("foo bar"))),
+            "Two input parts can only come from shell-split args, so the \
+             whitespace the shell swallowed belongs inside the quoted string"
         );
     }
 
