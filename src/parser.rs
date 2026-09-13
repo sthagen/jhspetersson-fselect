@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 #[cfg(feature = "interactive")]
 use directories::UserDirs;
-use crate::expr::Expr;
+use crate::expr::{Expr, FILE_TYPE_PROPS};
 use crate::field::Field;
 use crate::function::Function;
 use crate::lexer::Lexeme;
@@ -568,7 +568,7 @@ impl <'a> Parser<'a> {
                     right = match right {
                         Some(right) => {
                             let expr = expr.ok_or_else(|| "Expected expression after OR".to_string())?;
-                            Some(Expr::logical_op(right, LogicalOp::Or, expr))
+                            Some(Expr::logical_op(right, LogicalOp::Or, expr)?)
                         }
                         None => expr,
                     };
@@ -580,9 +580,9 @@ impl <'a> Parser<'a> {
                         Some(right) => {
                             let left = left.ok_or_else(|| "Expected expression before OR".to_string())?;
                             if left.weight <= right.weight {
-                                Ok(Some(Expr::logical_op(left, LogicalOp::Or, right)))
+                                Ok(Some(Expr::logical_op(left, LogicalOp::Or, right)?))
                             } else {
-                                Ok(Some(Expr::logical_op(right, LogicalOp::Or, left)))
+                                Ok(Some(Expr::logical_op(right, LogicalOp::Or, left)?))
                             }
                         }
                         None => Ok(left),
@@ -626,7 +626,7 @@ impl <'a> Parser<'a> {
                     right = match right {
                         Some(right) => {
                             let expr = expr.ok_or_else(|| "Expected expression after AND".to_string())?;
-                            Some(Expr::logical_op(right, LogicalOp::And, expr))
+                            Some(Expr::logical_op(right, LogicalOp::And, expr)?)
                         }
                         None => expr,
                     };
@@ -638,9 +638,9 @@ impl <'a> Parser<'a> {
                         Some(right) => {
                             let left = left.ok_or_else(|| "Expected expression before AND".to_string())?;
                             if left.weight <= right.weight {
-                                Ok(Some(Expr::logical_op(left, LogicalOp::And, right)))
+                                Ok(Some(Expr::logical_op(left, LogicalOp::And, right)?))
                             } else {
-                                Ok(Some(Expr::logical_op(right, LogicalOp::And, left)))
+                                Ok(Some(Expr::logical_op(right, LogicalOp::And, left)?))
                             }
                         }
                         None => Ok(left),
@@ -736,7 +736,7 @@ impl <'a> Parser<'a> {
                         true => LogicalOp::Or,
                     },
                     right_expr,
-                )))
+                )?))
             }
             Some(Lexeme::Operator(s)) if s.as_str() == "in" || s.as_str() == "exists" || s.as_str() == "notin" || s.as_str() == "notexists" => {
                 let list = self.parse_list()?;
@@ -1524,6 +1524,9 @@ impl <'a> Parser<'a> {
 
     fn negate_expr_op(expr: &Expr) -> Expr {
         let mut result = expr.clone();
+        for key in FILE_TYPE_PROPS {
+            result.props.remove(key);
+        }
 
         if let Some(left) = &expr.left {
             result.left = Some(Box::from(Self::negate_expr_op(left)));
@@ -1548,6 +1551,7 @@ impl <'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::{IS_DIR, IS_FILE, IS_PIPE, IS_SOCKET};
 
     #[test]
     fn simple_query() {
@@ -1650,9 +1654,9 @@ mod tests {
                         Op::Lte,
                         Expr::value(String::from("758")),
                     ),
-                ),
-            ),
-        );
+                ).unwrap(),
+            ).unwrap(),
+        ).unwrap();
         // Query expression must be reordered due to the weight difference of its branches
         assert_eq!(query.expr, Some(expr));
         assert_eq!(
@@ -1735,7 +1739,7 @@ mod tests {
             Op::NotLike,
             Expr::value(String::from("%.tst")),
         );
-        let expr = Expr::logical_op(left, LogicalOp::And, right);
+        let expr = Expr::logical_op(left, LogicalOp::And, right).unwrap();
 
         assert_eq!(query.expr, Some(expr));
     }
@@ -1759,7 +1763,7 @@ mod tests {
             Op::NotLike,
             Expr::value(String::from("%.tst")),
         );
-        let expr = Expr::logical_op(left, LogicalOp::And, right);
+        let expr = Expr::logical_op(left, LogicalOp::And, right).unwrap();
 
         assert_eq!(query.expr, Some(expr));
     }
@@ -3646,5 +3650,82 @@ mod tests {
         assert!(query.roots[0].is_subquery());
         assert!(!query.roots[1].is_subquery());
         assert_eq!(query.roots[1].path, "/b");
+    }
+
+    fn parse_query(sql: &str) -> Result<Query, String> {
+        let mut lexer = Lexer::new(vec![sql.to_string()]);
+        let mut p = Parser::new(&mut lexer);
+        p.parse(false)
+    }
+
+    #[test]
+    fn where_is_file_sets_prop() {
+        let query = parse_query("select name from /test where is_file and size > 0").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), Some(true));
+
+        let query = parse_query("select name from /test where size > 0 and is_file = true").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), Some(true));
+
+        let query = parse_query("select name from /test where is_file = false and size > 0").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), Some(false));
+
+        let query = parse_query("select name from /test where is_file or size > 0").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), None);
+
+        let query = parse_query("select is_file from /test").unwrap();
+        assert_eq!(query.fields[0].bool_prop(IS_FILE), Some(true));
+    }
+
+    #[test]
+    fn where_is_dir_sets_prop() {
+        let query = parse_query("select name from /test where is_dir and size > 0").unwrap();
+        let expr = query.expr.unwrap();
+        assert_eq!(expr.bool_prop(IS_DIR), Some(true));
+        assert_eq!(expr.bool_prop(IS_FILE), Some(false));
+
+        let query = parse_query("select name from /test where not is_dir").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_DIR), None);
+
+        let err = parse_query("select name from /test where is_dir and is_dir = false").unwrap_err();
+        assert!(err.contains("is_dir"), "unexpected error: {}", err);
+
+        let err = parse_query("select name from /test where is_file and is_dir").unwrap_err();
+        assert!(err.contains("requires is_dir = false, but 'IsDir Eq true' requires is_dir = true"), "unexpected error: {}", err);
+
+        let err = parse_query("select name from /test where is_dir and size > 0 and is_pipe").unwrap_err();
+        assert!(err.contains("is_dir"), "unexpected error: {}", err);
+
+        let query = parse_query("select name from /test where is_file or is_pipe").unwrap();
+        let expr = query.expr.unwrap();
+        assert_eq!(expr.bool_prop(IS_DIR), Some(false));
+        assert_eq!(expr.bool_prop(IS_FILE), None);
+        assert_eq!(expr.bool_prop(IS_PIPE), None);
+        assert_eq!(expr.bool_prop(IS_SOCKET), Some(false));
+
+        let err = parse_query("select name from /test where is_pipe and is_socket").unwrap_err();
+        assert!(err.contains("is_pipe") || err.contains("is_socket"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn not_clears_is_file_prop() {
+        let query = parse_query("select name from /test where not is_file = true").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), None);
+
+        let query = parse_query("select name from /test where not (is_file and size > 0)").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), None);
+    }
+
+    #[test]
+    fn conflicting_is_file_conditions_are_an_error() {
+        let err = parse_query("select name from /test where is_file = true and is_file = false").unwrap_err();
+        assert!(err.contains("is_file"), "unexpected error: {}", err);
+
+        let err = parse_query("select name from /test where is_file and size > 0 and is_file != true").unwrap_err();
+        assert!(err.contains("is_file"), "unexpected error: {}", err);
+
+        assert!(parse_query("select name from /test where is_file and not is_file").is_ok());
+
+        let query = parse_query("select name from /test where is_file or (is_file = false and size > 1mb)").unwrap();
+        assert_eq!(query.expr.unwrap().bool_prop(IS_FILE), None);
     }
 }
